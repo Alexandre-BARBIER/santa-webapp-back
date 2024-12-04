@@ -6,7 +6,7 @@
         "db_name": "webappdb"
     },
     "cors_config": {
-        "host": "santa.gimligili.fr"
+        "host": "santa.zapy.fr"
     },
     "flask_server": {
         "host": "0.0.0.0",
