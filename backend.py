@@ -488,7 +488,7 @@ def forgotpassword():
                     </tr>
                     <tr style="background-color: #f4f4f4;">
                         <td style="text-align: center; padding: 10px;">
-                            <p style="margin: 0; font-size: 12px; color: #888;">© 2025 Your Company. All rights reserved.</p>
+                            <p style="margin: 0; font-size: 12px; color: #888;">© 2025 Santa Zapy. All rights reserved.</p>
                         </td>
                     </tr>
                 </tbody>

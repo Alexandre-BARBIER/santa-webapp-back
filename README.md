@@ -37,6 +37,27 @@ Pour déploiement correctement ce projet sur caprover, il convient de définir l
         
     CORS_HOST
   </li>
+  <h2>SMTP Configuration :</h2>
+  <li> SMTP username :
+        
+    MAIL_USER
+  </li>
+  <li> SMTP password :
+        
+    MAIL_PASSWORD
+  </li>
+  <li> SMTP Server :
+        
+    MAIL8SERVER
+  </li>
+  <li> SMTP Port :
+        
+    MAIL_PORT
+  </li>
+  <li> Name to use :
+        
+    MAIL_NAME
+  </li>
   <h2>Configuration des poivres :</h2>
   <li> Poivre pour sécuriser les mots de passe des utilisateurs : 
     
