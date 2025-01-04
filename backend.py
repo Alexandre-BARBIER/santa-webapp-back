@@ -18,6 +18,8 @@ from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy 
 from sqlalchemy_utils import database_exists, create_database
 from flask_login import LoginManager, login_user, UserMixin, login_required, logout_user, current_user
+from flask_mail import Mail, Message
+
 from datetime import datetime, timedelta
 
 from cryptography.hazmat.backends import default_backend
@@ -86,6 +88,16 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['REMEMBER_COOKIE_HTTPONLY'] = True
 app.config['REMEMBER_COOKIE_SAMESITE'] = 'Lax'
+
+# Configuration for Flask-Mail
+app.config['MAIL_SERVER'] = os.environ['MAIL_SERVER']
+app.config['MAIL_PORT'] = os.environ['MAIL_PORT']
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = os.environ['MAIL_USER']  # Your email
+app.config['MAIL_PASSWORD'] = os.environ['MAIL_PASSWORD']  # Your email password
+app.config['MAIL_DEFAULT_SENDER'] = (os.environ['MAIL_NAME'], os.environ['MAIL_USER'])
+
+mail = Mail(app)
 
 if not(server_debug):
     app.config['SESSION_COOKIE_SECURE'] = True
@@ -411,6 +423,63 @@ def signup():
             return "Email already used"
     else:
         return "Login already used"
+
+@app.route('/api/forgotpassword', methods=['POST'])
+def forgotpassword():
+    forgot_request = request.get_json()
+
+    user = db.session.query(User).filter(User.email_address==forgot_request['email_address']).first()
+    
+    char_pool = string.ascii_letters + string.digits
+    password = [
+        random.choice(string.ascii_uppercase),  # At least one uppercase letter
+        random.choice(string.ascii_lowercase),  # At least one lowercase letter
+        random.choice(string.digits),          # At least one digit
+    ]
+    password += random.choices(char_pool, k=10 - len(password))
+
+    random.shuffle(password)
+
+    temporary_password = ''.join(password)
+
+    user.update_password(temporary_password)
+    db.session.commit()
+
+    try:
+        recipient = forgot_request['email_address']
+        subject = 'Reset Password Santa'
+        body = f"""
+            Dear {user.first_name} {user.surname},
+
+            We have successfully processed your request to reset your password. Below are your updated login credentials:
+
+            Username: {user.login}
+            Temporary Password: {temporary_password}
+
+            For your security, please log in to your account and update your password as soon as possible. You can do so by following these steps:
+            1. Log in to your account using the temporary password provided.
+            2. Click on Change Password
+            3. Enter a new, secure password of your choice and save the changes.
+
+            If you didn’t request a password reset or believe this message was sent in error, please contact me at this email address alexbarbier0307@gmail.com
+
+            Thank you for choosing our service. If you have any questions or need further assistance, don't hesitate to reach out.
+
+            Best regards,
+            Santa Zapy
+            """
+
+        # Validate required fields
+        if not recipient or not subject or not body:
+            return jsonify({"error": "'recipient', 'subject', and 'body' are required fields"}), 400
+
+        # Create and send the email
+        msg = Message(subject, recipients=[recipient], body=body)
+        mail.send(msg)
+
+        return jsonify({"message": "Email sent successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/changepassword', methods = ['PUT'])
 @login_required
