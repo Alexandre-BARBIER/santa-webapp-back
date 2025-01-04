@@ -19,7 +19,6 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy_utils import database_exists, create_database
 from flask_login import LoginManager, login_user, UserMixin, login_required, logout_user, current_user
 from flask_mail import Mail, Message
-from flasgger import Swagger
 
 from datetime import datetime, timedelta
 
@@ -105,9 +104,6 @@ if not(server_debug):
     app.config['REMEMBER_COOKIE_SECURE'] = True
 
 db = SQLAlchemy(app)
-
-swagger = Swagger(app)
-
 ####################################################################################################
 ##########################################   PEPPERING   ###########################################
 ####################################################################################################
@@ -364,47 +360,11 @@ def check_inactive_users_periodically():
 @app.route('/api/logout')
 @login_required
 def logout():
-    """
-    Logs the user out.
-    ---
-    tags:
-      - Authentication
-    responses:
-      200:
-        description: User logged out successfully.
-    """
     logout_user()
     return "Logged out"
 
 @app.route('/api/login', methods=['POST'])
 def login():
-    """
-    Logs in a user.
-    ---
-    tags:
-      - Authentication
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              login:
-                type: string
-                example: "user123"
-              password:
-                type: string
-                example: "password123"
-              remember_me:
-                type: string
-                example: "true"
-    responses:
-      200:
-        description: User logged in successfully.
-      401:
-        description: Incorrect login or password.
-    """
     login = request.get_json()['login']
     password = request.get_json()['password']
     
@@ -431,46 +391,6 @@ def login():
 
 @app.route('/api/signup', methods = ['POST'])
 def signup():
-    """
-    Signs up a new user.
-    ---
-    tags:
-      - Authentication
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              first_name:
-                type: string
-                example: "John"
-              surname:
-                type: string
-                example: "Doe"
-              login:
-                type: string
-                example: "johndoe"
-              password:
-                type: string
-                example: "password123"
-              birthdate:
-                type: string
-                format: date
-                example: "1990-01-01"
-              email_address:
-                type: string
-                example: "johndoe@example.com"
-              remember_me:
-                type: string
-                example: "true"
-    responses:
-      200:
-        description: User signed up and logged in successfully.
-      400:
-        description: Validation error or incorrect format.
-    """
     signup_request = request.get_json()
     dbentry_user = db.session.query(User).filter(User.login == signup_request['login']).first()
     
@@ -506,29 +426,6 @@ def signup():
 
 @app.route('/api/forgotpassword', methods=['POST'])
 def forgotpassword():
-    """
-    Resets the user's password and sends an email with the new password.
-    ---
-    tags:
-      - Authentication
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              email_address:
-                type: string
-                example: "johndoe@example.com"
-    responses:
-      200:
-        description: Temporary password sent via email.
-      400:
-        description: Validation error.
-      500:
-        description: Internal server error.
-    """
     forgot_request = request.get_json()
 
     user = db.session.query(User).filter(User.email_address==forgot_request['email_address']).first()
@@ -615,30 +512,6 @@ def forgotpassword():
 @app.route('/api/changepassword', methods = ['PUT'])
 @login_required
 def changepassword():
-    """
-    Changes the user's password.
-    ---
-    tags:
-      - Authentication
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              old_password:
-                type: string
-                example: "oldpassword123"
-              new_password:
-                type: string
-                example: "newpassword123"
-    responses:
-      200:
-        description: Password updated successfully.
-      400:
-        description: Validation error or incorrect current password.
-    """
     user_id = current_user.id
     user = db.session.query(User).filter(User.id==user_id).first()
     change_password_request = request.get_json()
@@ -655,27 +528,6 @@ def changepassword():
 @app.route('/api/user/delete', methods = ['DELETE'])
 @login_required
 def delete_user():
-    """
-    Deletes the current user's account.
-    ---
-    tags:
-      - User
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              password:
-                type: string
-                example: "password123"
-    responses:
-      200:
-        description: User account deleted successfully.
-      400:
-        description: Incorrect password.
-    """
     user_id = current_user.id
     user = db.session.query(User).filter(User.id==user_id).first()
     delete_request = request.get_json()
@@ -718,40 +570,6 @@ def delete_user():
 @app.route('/api/changeprofile', methods = ['PUT'])
 @login_required
 def changeprofile():
-    """
-    Updates the current user's profile.
-    ---
-    tags:
-      - User
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              first_name:
-                type: string
-                example: "John"
-              surname:
-                type: string
-                example: "Doe"
-              login:
-                type: string
-                example: "johndoe"
-              birthdate:
-                type: string
-                format: date
-                example: "1990-01-01"
-              email_address:
-                type: string
-                example: "johndoe@example.com"
-    responses:
-      200:
-        description: Profile updated successfully.
-      400:
-        description: Validation error or login/email already used.
-    """
     change_profile_request = request.get_json()
     user = current_user
     dbentry_user = User.query.filter_by(login=change_profile_request['login']).all()
@@ -785,40 +603,6 @@ def changeprofile():
 @app.route('/api/profile/<int:userid>', methods = ['GET'])
 @login_required
 def profile(userid):
-    """
-    Retrieves the profile information of a user.
-    ---
-    tags:
-      - User
-    parameters:
-      - name: userid
-        in: path
-        required: true
-        schema:
-          type: integer
-        description: ID of the user whose profile is being retrieved.
-    responses:
-      200:
-        description: User profile retrieved successfully.
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                first_name:
-                  type: string
-                surname:
-                  type: string
-                login:
-                  type: string
-                email_address:
-                  type: string
-                birthdate:
-                  type: string
-                  format: date
-      404:
-        description: User not found.
-    """
     dbentry = db.session.query(User).filter(User.id == userid).first()
     if dbentry != None:
         record = {"first_name":dbentry.first_name,"surname":dbentry.surname,"login":dbentry.login,"email_address":""}
@@ -835,22 +619,6 @@ def profile(userid):
 @app.route('/api/myprofile', methods = ['GET'])
 @login_required
 def myprofile():
-    """
-    Retrieves the current user's ID.
-    ---
-    tags:
-      - User
-    responses:
-      200:
-        description: User ID retrieved successfully.
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                user_id:
-                  type: integer
-    """
     record_json = jsonify({"user_id":current_user.id})
     return record_json
 
@@ -858,34 +626,6 @@ def myprofile():
 @app.route('/api/mygifts', methods=['GET'])
 @login_required
 def mygifts():
-    """
-    Retrieves a list of gifts for the current user.
-    ---
-    tags:
-      - Gifts
-    responses:
-      200:
-        description: List of gifts retrieved successfully.
-        content:
-          application/json:
-            schema:
-              type: array
-              items:
-                type: object
-                properties:
-                  giftID:
-                    type: integer
-                  name:
-                    type: string
-                  description:
-                    type: string
-                  price:
-                    type: number
-                  receiverID:
-                    type: integer
-                  image_url:
-                    type: string
-    """
     user_id = current_user.id
     gifts = db.session.query(Gift).filter(Gift.receiverID == user_id).all()
     gifts_list = [{
@@ -901,47 +641,6 @@ def mygifts():
 @app.route('/api/gift/group/<int:group_id>', methods=['GET'])
 @login_required
 def group_gifts(group_id):
-    """
-    Retrieves gifts in a specified group.
-    ---
-    tags:
-      - Gifts
-    parameters:
-      - name: group_id
-        in: path
-        required: true
-        schema:
-          type: integer
-        description: ID of the gift group.
-    responses:
-      200:
-        description: List of gifts in the group retrieved successfully.
-        content:
-          application/json:
-            schema:
-              type: array
-              items:
-                type: object
-                properties:
-                  giftID:
-                    type: integer
-                  name:
-                    type: string
-                  description:
-                    type: string
-                  price:
-                    type: number
-                  receiverID:
-                    type: integer
-                  receiverLogin:
-                    type: string
-                  gifterID:
-                    type: integer
-                  image_url:
-                    type: string
-      401:
-        description: User not authorized to view the group's gifts.
-    """
     user_id = current_user.id
 
     
@@ -977,33 +676,6 @@ def group_gifts(group_id):
 @app.route('/api/gift/add', methods = ['POST'])
 @login_required
 def add_gift():
-    """
-    Adds a new gift for the current user.
-    ---
-    tags:
-      - Gifts
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              name:
-                type: string
-                example: "Book"
-              description:
-                type: string
-                example: "A fantasy novel."
-              price:
-                type: number
-                example: 25.99
-    responses:
-      200:
-        description: Gift added successfully.
-      400:
-        description: Invalid price.
-    """
     userid = current_user.id
     add_request = request.get_json()
     try:
@@ -1018,29 +690,6 @@ def add_gift():
 @app.route('/api/gift/select', methods = ['POST'])
 @login_required
 def select_gift():
-    """
-    Marks a gift as selected by the current user.
-    ---
-    tags:
-      - Gifts
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              gift_id:
-                type: integer
-                example: 123
-    responses:
-      200:
-        description: Gift selected successfully.
-      401:
-        description: User not in the same group as the gift receiver.
-      404:
-        description: Gift not found.
-    """
     userid = current_user.id
     giftid = request.get_json()['gift_id']
     
@@ -1063,27 +712,6 @@ def select_gift():
 @app.route('/api/gift/unselect', methods = ['POST'])
 @login_required
 def unselect_gift():
-    """
-    Unmarks a gift as selected by the current user.
-    ---
-    tags:
-      - Gifts
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              gift_id:
-                type: integer
-                example: 123
-    responses:
-      200:
-        description: Gift unselected successfully.
-      404:
-        description: Gift not found.
-    """
     userid = current_user.id
     giftid = request.get_json()['gift_id']
     
@@ -1104,29 +732,6 @@ def unselect_gift():
 @app.route('/api/gift/delete', methods = ['DELETE'])
 @login_required
 def delete_gift():
-    """
-    Deletes a gift owned by the current user.
-    ---
-    tags:
-      - Gifts
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              gift_id:
-                type: integer
-                example: 123
-    responses:
-      200:
-        description: Gift deleted successfully.
-      404:
-        description: Gift not found.
-      400:
-        description: User not authorized to delete the gift.
-    """
     userid = current_user.id
     giftid = request.get_json()['gift_id']
     
@@ -1152,28 +757,6 @@ def delete_gift():
 @app.route('/api/mygroups', methods=['GET'])
 @login_required
 def my_groups():
-    """
-    Retrieves a list of groups the current user belongs to.
-    ---
-    tags:
-      - Groups
-    responses:
-      200:
-        description: List of user's groups retrieved successfully.
-        content:
-          application/json:
-            schema:
-              type: array
-              items:
-                type: object
-                properties:
-                  id:
-                    type: integer
-                  name:
-                    type: string
-                  secret_santa:
-                    type: string
-    """
     user_id = current_user.id
     
     # Joining GroupsMembers and Groups tables on groupID
@@ -1192,29 +775,6 @@ def my_groups():
 @app.route('/api/group/all', methods=['GET'])
 @login_required
 def show_groups():
-
-    """
-    Get all public groups.
-    ---
-    tags:
-      - Groups
-    responses:
-      200:
-        description: A list of public groups
-        content:
-          application/json:
-            schema:
-              type: array
-              items:
-                type: object
-                properties:
-                  id:
-                    type: integer
-                    example: 1
-                  name:
-                    type: string
-                    example: Group Name
-    """
     public_groups = db.session.query(GiftGroup).filter(GiftGroup.visibility != 'protected').all()
     groups = []
     for group in public_groups:
@@ -1225,34 +785,6 @@ def show_groups():
 @app.route('/api/group/create', methods=['POST'])
 @login_required
 def create_group():
-    """
-    Create a new group.
-    ---
-    tags:
-      - Groups
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              groupName:
-                type: string
-                example: Family Group
-              visibility:
-                type: string
-                enum: [protected, public]
-                example: public
-              join_code:
-                type: string
-                example: secret123
-    responses:
-      200:
-        description: Group created successfully
-      400:
-        description: Invalid visibility
-    """
     user_id = current_user.id
     create_request = request.get_json()
     
@@ -1270,38 +802,6 @@ def create_group():
 @app.route('/api/group/admin', methods=['GET'])
 @login_required
 def group_admin():
-    """
-    Get groups administered by the current user.
-    ---
-    tags:
-      - Groups
-    responses:
-      200:
-        description: List of groups administered by the user
-        content:
-          application/json:
-            schema:
-              type: array
-              items:
-                type: object
-                properties:
-                  id:
-                    type: integer
-                    example: 1
-                  name:
-                    type: string
-                    example: My Group
-                  visibility:
-                    type: string
-                    enum: [protected, public]
-                    example: public
-                  join_code:
-                    type: string
-                    example: h***2
-                  secret_santa:
-                    type: string
-                    example: Yes
-    """
     user_id = current_user.id
     groups_administred = db.session.query(GiftGroup).filter(GiftGroup.creatorID == user_id).all()
     
@@ -1324,48 +824,6 @@ def group_admin():
 @app.route('/api/group/info/<int:group_id>', methods=['GET'])
 @login_required
 def group_info(group_id):
-    """
-    Get detailed information about a group.
-    ---
-    tags:
-      - Groups
-    parameters:
-      - name: group_id
-        in: path
-        required: true
-        schema:
-          type: integer
-        description: ID of the group
-    responses:
-      200:
-        description: Group information
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                id:
-                  type: integer
-                  example: 1
-                name:
-                  type: string
-                  example: Group Name
-                visibility:
-                  type: string
-                  enum: [protected, public]
-                  example: public
-                join_code:
-                  type: string
-                  example: j****3
-                members:
-                  type: array
-                  items:
-                    type: string
-                    example: user123
-                status:
-                  type: string
-                  example: OK
-    """
     user_id = current_user.id
     group = db.session.query(GiftGroup).filter(GiftGroup.id == group_id).first()
 
@@ -1397,45 +855,6 @@ def group_info(group_id):
 @app.route('/api/group/update', methods=['POST'])
 @login_required
 def update_group():
-    """
-    Update a group's details.
-    ---
-    tags:
-      - Groups
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              groupID:
-                type: integer
-                example: 1
-              groupName:
-                type: string
-                example: Updated Group Name
-              visibility:
-                type: string
-                enum: [protected, public]
-                example: public
-              update_code:
-                type: string
-                enum: [true, false]
-                example: false
-              join_code:
-                type: string
-                example: new_code123
-    responses:
-      200:
-        description: Group updated successfully
-      400:
-        description: Invalid visibility
-      404:
-        description: Group not found
-      403:
-        description: User is not the admin of the group
-    """
     user_id = current_user.id
     update_request = request.get_json()
     
@@ -1461,34 +880,6 @@ def update_group():
 @app.route('/api/group/join', methods=['POST'])
 @login_required
 def join_group():
-    """
-    Join a group using a join code.
-    ---
-    tags:
-      - Groups
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              groupID:
-                type: integer
-                example: 1
-              join_code:
-                type: string
-                example: join123
-    responses:
-      200:
-        description: Group joined successfully
-      400:
-        description: Invalid group ID
-      404:
-        description: Group not found
-      403:
-        description: Failed to join group (invalid join code or already a member)
-    """
     user_id = current_user.id
     group_id = request.get_json()['groupID']
     input_code = request.get_json()['join_code']
@@ -1524,27 +915,6 @@ def join_group():
 @app.route('/api/group/leave', methods=['POST'])
 @login_required
 def leave_group():
-    """
-    Leave a group.
-    ---
-    tags:
-      - Groups
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              groupID:
-                type: integer
-                example: 1
-    responses:
-      200:
-        description: Successfully left the group
-      404:
-        description: Not a member of the group
-    """
     user_id = current_user.id
     group_id = request.get_json()['groupID']
 
@@ -1566,29 +936,6 @@ def leave_group():
 @app.route('/api/group/delete', methods=['DELETE'])
 @login_required
 def delete_group():
-    """
-    Delete a group created by the current user.
-    ---
-    tags:
-      - Groups
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              groupID:
-                type: integer
-                example: 1
-    responses:
-      200:
-        description: The group has been removed successfully
-      400:
-        description: Invalid group ID or group not found
-      401:
-        description: User is not authorized to delete the group
-    """
     user_id = current_user.id
     delete_request = request.get_json()
 
@@ -1621,35 +968,6 @@ def delete_group():
 @app.route('/api/secret/start', methods=['POST'])
 @login_required
 def secret_stanta_start():
-    """
-    Start a Secret Santa event for a group.
-    ---
-    tags:
-      - Secret Santa
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              groupID:
-                type: integer
-                example: 1
-              date:
-                type: string
-                format: date
-                example: 2024-12-25
-    responses:
-      200:
-        description: Secret Santa started successfully
-      400:
-        description: Invalid input (e.g., invalid group, incorrect date format)
-      403:
-        description: Only the group admin can start Secret Santa
-      409:
-        description: Secret Santa already active or insufficient members
-    """
     user_id = current_user.id
     start_request = request.get_json()
     
@@ -1689,35 +1007,6 @@ def secret_stanta_start():
 @app.route('/api/secret/reschedule', methods=['POST'])
 @login_required
 def secret_stanta_reschedule():
-    """
-    Reschedule the Secret Santa event for a group.
-    ---
-    tags:
-      - Secret Santa
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              groupID:
-                type: integer
-                example: 1
-              date:
-                type: string
-                format: date
-                example: 2024-12-30
-    responses:
-      200:
-        description: Secret Santa rescheduled successfully
-      400:
-        description: Invalid input (e.g., incorrect date format)
-      403:
-        description: Only the group admin can reschedule Secret Santa
-      409:
-        description: No active Secret Santa to reschedule
-    """
     user_id = current_user.id
     schedule_request = request.get_json()
     
@@ -1741,31 +1030,6 @@ def secret_stanta_reschedule():
 @app.route('/api/secret/stop', methods=['POST'])
 @login_required
 def secret_stanta_stop():
-    """
-    Stop the Secret Santa event for a group.
-    ---
-    tags:
-      - Secret Santa
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              groupID:
-                type: integer
-                example: 1
-    responses:
-      200:
-        description: Secret Santa stopped successfully
-      400:
-        description: Invalid input (e.g., non-existent group)
-      403:
-        description: Only the group admin can stop Secret Santa
-      409:
-        description: No active Secret Santa to stop
-    """
     user_id = current_user.id
     stop_request = request.get_json()
     
@@ -1790,64 +1054,6 @@ def secret_stanta_stop():
 @app.route('/api/secret/mysecret/group/<int:group_id>', methods=['GET'])
 @login_required
 def my_secret(group_id):
-    """
-    Get the Secret Santa recipient for the current user in a specific group.
-    ---
-    tags:
-      - Secret Santa
-    parameters:
-      - name: group_id
-        in: path
-        required: true
-        schema:
-          type: integer
-        description: ID of the group
-    responses:
-      200:
-        description: Recipient and gift details
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                date:
-                  type: string
-                  format: date
-                  example: 2024-12-25
-                receiverLogin:
-                  type: string
-                  example: recipient_user123
-                gifts:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      giftID:
-                        type: integer
-                        example: 101
-                      name:
-                        type: string
-                        example: Toy Car
-                      description:
-                        type: string
-                        example: A cool toy car for kids
-                      price:
-                        type: number
-                        format: float
-                        example: 29.99
-                      receiverID:
-                        type: integer
-                        example: 45
-                      gifterID:
-                        type: integer
-                        example: 23
-                      image_url:
-                        type: string
-                        example: http://example.com/images/toy-car.jpg
-                status:
-                  type: string
-                  example: OK
-    """
     user_id = current_user.id
     
     group = db.session.query(GiftGroup).filter(GiftGroup.id == group_id).first()
@@ -1892,35 +1098,6 @@ def my_secret(group_id):
 @app.route('/api/secret/info/group/<int:group_id>', methods=['GET'])
 @login_required
 def is_active(group_id):
-
-    """
-    Check if a Secret Santa event is active for a specific group.
-    ---
-    tags:
-      - Secret Santa
-    parameters:
-      - name: group_id
-        in: path
-        required: true
-        schema:
-          type: integer
-        description: ID of the group
-    responses:
-      200:
-        description: Secret Santa status for the group
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                secret_santa:
-                  type: string
-                  example: true
-                date:
-                  type: string
-                  format: date
-                  example: 2024-12-25
-    """
     user_id = current_user.id
     
     group = db.session.query(GiftGroup).filter(GiftGroup.id == group_id).first()
