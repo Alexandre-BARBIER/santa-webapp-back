@@ -449,25 +449,53 @@ def forgotpassword():
         recipient = forgot_request['email_address']
         subject = 'Reset Password Santa'
         body = f"""
-            Dear {user.first_name} {user.surname},
-
-            We have successfully processed your request to reset your password. Below are your updated login credentials:
-
-            Username: {user.login}
-            Temporary Password: {temporary_password}
-
-            For your security, please log in to your account and update your password as soon as possible. You can do so by following these steps:
-            1. Log in to your account using the temporary password provided.
-            2. Click on Change Password
-            3. Enter a new, secure password of your choice and save the changes.
-
-            If you didn’t request a password reset or believe this message was sent in error, please contact me at this email address alexbarbier0307@gmail.com
-
-            Thank you for choosing our service. If you have any questions or need further assistance, don't hesitate to reach out.
-
-            Best regards,
-            Santa Zapy
-            """
+        <html>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <table style="width: 100%; max-width: 600px; margin: 0 auto; border-collapse: collapse; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+                <thead>
+                    <tr style="background-color: #f4f4f4; border-bottom: 1px solid #ddd;">
+                        <th style="padding: 15px; text-align: left;">
+                            <h2 style="margin: 0; color: #333;">Password Reset Confirmation</h2>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td style="padding: 20px;">
+                            <p>Dear {user.first_name} {user.surname},</p>
+                            <p>We have successfully processed your request to reset your password. Below are your updated login credentials:</p>
+                            <table style="margin: 20px 0; width: 100%;">
+                                <tr>
+                                    <td style="font-weight: bold; color: #555;">Username:</td>
+                                    <td>{user.login}</td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: bold; color: #555;">Temporary Password:</td>
+                                    <td><strong>{temporary_password}</strong></td>
+                                </tr>
+                            </table>
+                            <p>For your security, please log in to your account and update your password as soon as possible. You can do so by following these steps:</p>
+                            <ol>
+                                <li>Log in to your account using the temporary password provided.</li>
+                                <li>Click on the <strong>"Change Password"</strong> button.</li>
+                                <li>Enter a new, secure password of your choice and save the changes.</li>
+                            </ol>
+                            <p style="color: #888;">If you didn’t request a password reset or believe this message was sent in error, please contact me immediately at <a href="{os.environ['MAIL_USER']}" style="color: #007BFF;">{os.environ['MAIL_USER']}</a></p>
+                            <p>Thank you for choosing our service. If you have any questions or need further assistance, don't hesitate to reach out.</p>
+                            <p>Best regards,</p>
+                            <p style="font-weight: bold;">Santa Zapy<br></p>
+                        </td>
+                    </tr>
+                    <tr style="background-color: #f4f4f4;">
+                        <td style="text-align: center; padding: 10px;">
+                            <p style="margin: 0; font-size: 12px; color: #888;">© 2025 Your Company. All rights reserved.</p>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </body>
+        </html>
+        """
 
         # Validate required fields
         if not recipient or not subject or not body:
