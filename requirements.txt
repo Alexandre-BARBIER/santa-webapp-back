@@ -9,3 +9,4 @@ cffi
 cryptography
 mariadb
 waitress
+flasgger
