@@ -2,6 +2,7 @@ Flask
 Flask_Cors
 Flask_SQLAlchemy
 flask-login
+Flask-Mail
 sqlalchemy-utils
 argon2-cffi
 cffi
