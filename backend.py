@@ -52,8 +52,8 @@ else:
     cors_protocol = 'https'
 
 # Extract Account Inactivity Policy Configuration
-max_inactivity_allowed = os.environ['MAX_INACTIVITY']
-check_interval = os.environ['INACTIVITY_CHECK']
+max_inactivity_allowed = int(os.environ['MAX_INACTIVITY'])
+check_interval = int(os.environ['INACTIVITY_CHECK'])
 
 
 ####################################################################################################
