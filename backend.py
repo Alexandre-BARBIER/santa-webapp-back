@@ -478,7 +478,7 @@ def changeprofile():
     dbentry_user = User.query.filter_by(login=change_profile_request['login']).all()
 
     clean_email = sanitize_email(change_profile_request['email_address'])
-    dbentry_email = db.session.query(User).filter(User.email_address == clean_email).first()
+    dbentry_email = db.session.query(User).filter(User.email_address == clean_email).all()
     
 
     if dbentry_user == [] or user.login == change_profile_request['login']:
