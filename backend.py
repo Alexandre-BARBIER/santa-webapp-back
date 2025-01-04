@@ -475,24 +475,31 @@ def delete_user():
 def changeprofile():
     change_profile_request = request.get_json()
     user = current_user
-    dbentry = User.query.filter_by(login=change_profile_request['login']).all()
+    dbentry_user = User.query.filter_by(login=change_profile_request['login']).all()
 
-    if dbentry == [] or user.login == change_profile_request['login']:
-        if change_profile_request['birthdate'] == "":
-            birthdate = user.birthdate
+    clean_email = sanitize_email(change_profile_request['email_address'])
+    dbentry_email = db.session.query(User).filter(User.email_address == clean_email).first()
+    
+
+    if dbentry_user == [] or user.login == change_profile_request['login']:
+        if dbentry_email == [] or user.email_address == change_profile_request['email_address']:
+            if change_profile_request['birthdate'] == "":
+                birthdate = user.birthdate
+            else:
+                birthdate = string_to_date(change_profile_request['birthdate'])
+            if change_profile_request['email_address'] == "":
+                email = user.email_address
+            else:
+                email = change_profile_request['email_address']
+            email = sanitize_email(email)
+            if birthdate != "Incorrect date format" and email:
+                current_user.update(change_profile_request['first_name'], change_profile_request['surname'], change_profile_request['login'], birthdate, email)
+                db.session.commit()
+                return "Updated Profile"
+            else:
+                return "Incorrect format"
         else:
-            birthdate = string_to_date(change_profile_request['birthdate'])
-        if change_profile_request['email_address'] == "":
-            email = user.email_address
-        else:
-            email = change_profile_request['email_address']
-        email = sanitize_email(email)
-        if birthdate != "Incorrect date format" and email:
-            current_user.update(change_profile_request['first_name'], change_profile_request['surname'], change_profile_request['login'], birthdate, email)
-            db.session.commit()
-            return "Updated Profile"
-        else:
-            return "Incorrect format"
+            return "Email already used"
     else:
         return "Login already used"
 
