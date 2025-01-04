@@ -502,7 +502,7 @@ def forgotpassword():
             return jsonify({"error": "'recipient', 'subject', and 'body' are required fields"}), 400
 
         # Create and send the email
-        msg = Message(subject, recipients=[recipient], body=body)
+        msg = Message(subject, recipients=[recipient], html=body)
         mail.send(msg)
 
         return jsonify({"message": "Email sent successfully"}), 200
