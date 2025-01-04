@@ -27,34 +27,24 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 #############################################   INIT   #############################################
 ####################################################################################################
 
-def load_config(file_path):
-    with open(file_path, 'r') as f:
-        config = json.load(f)
-    return config
-
-config = load_config('config.json')
-
 # Extract database configuration
-db_config = config['database']
-username = db_config['username']
-password = os.environ['SANTA_WEBAPP_DB_PASSWORD']
-db_host = db_config['host']
-db_port = db_config['port']
-db_name = db_config['db_name']
+username = os.environ['DB_USERNAME']
+password = os.environ['DB_PASSWORD']
+db_host = os.environ['DB_HOST']
+db_port = os.environ['DB_PORT']
+db_name = os.environ['DB_NAME']
 
 # Extract Flask Server configuration
-server_config = config['flask_server']
-server_host = server_config['host']
-server_port = server_config['port']
-server_debug = server_config["debug"] == "True"
+server_host = os.environ['SERVER_HOST']
+server_port = os.environ['SERVER_PORT']
+server_debug = os.environ['SERVER_DEBUG'] == "True"
 
 # Extract Password Security configuration
-PEPPER = os.environ['SANTA_WEBAPP_USER_PEPPER']
-GROUP_PEPPER = os.environ['SANTA_WEBAPP_GROUP_PEPPER']
+PEPPER = os.environ['USER_PEPPER']
+GROUP_PEPPER = os.environ['GROUP_PEPPER']
 
 # Extract CORS configuration
-cors_config = config['cors_config']
-cors_host = cors_config['host']
+cors_host = os.environ['CORS_HOST']
 
 if server_debug:
     cors_protocol = 'http'
@@ -62,9 +52,8 @@ else:
     cors_protocol = 'https'
 
 # Extract Account Inactivity Policy Configuration
-inactivity_policy_config = config['inactivity_policy']
-max_inactivity_allowed = inactivity_policy_config['max_inactivity']
-check_interval = inactivity_policy_config['check_interval']
+max_inactivity_allowed = os.environ['MAX_INACTIVITY']
+check_interval = os.environ['INACTIVITY_CHECK']
 
 
 ####################################################################################################

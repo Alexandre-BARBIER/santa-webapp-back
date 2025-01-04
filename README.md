@@ -1,18 +1,50 @@
 # Déploiement Caprover
 
-Pour déploiement correctement ce projet sur caprover, il convient de définir les trois variables d'environnement suivantes :
+Pour déploiement correctement ce projet sur caprover, il convient de définir les variables d'environnement suivantes :
 <ul>
+  <h2>Configuration de la base de donnée</h2>
+  <li> Utilisateur de la base de données :
+        
+    DB_USERNAME
+  </li>
   <li> Mot de passe de la base de données :
         
-    SANTA_WEBAPP_DB_PASSWORD
+    DB_PASSWORD
   </li>
+  <li> Hôte de la base de données :
+        
+    DB_HOST
+  </li>
+  <li> Port de la base de données :
+        
+    DB_PORT
+  </li>
+  <li> Nom de la base de données :
+        
+    DB_NAME
+  </li>
+  <h2>Configuration du serveur :</h2>
+  <li> Hôte du serveur :
+        
+    SERVER_HOST
+  </li>
+  <li> Port du serveur :
+        
+    SERVER_PORT
+  </li>
+  <h2>Configuration des CORS :</h2>
+    <li> Hôte du front autorisé par les CORS :
+        
+    CORS_HOST
+  </li>
+  <h2>Configuration des poivres :</h2>
   <li> Poivre pour sécuriser les mots de passe des utilisateurs : 
     
-    SANTA_WEBAPP_USER_PEPPER
+    USER_PEPPER
   </li>
   <li> Poivre pour sécuriser les mots de passe des groupes :
     
-    SANTA_WEBAPP_GROUP_PEPPER
+    GROUP_PEPPER
   </li>
 </ul>
 
@@ -33,7 +65,6 @@ Ensuite :
 sudo docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' mariadbtest
 ```
 Pour avoir l'IP sur laquelle tourne la DB
-Puis dans `config.json` remplacer le host par l'IP ainsi trouvé
 
 
 # Run back hors docker
