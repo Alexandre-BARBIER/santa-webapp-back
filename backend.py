@@ -365,6 +365,8 @@ def login():
 
 
     user = db.session.query(User).filter(User.login == login).first()
+    if not user:
+        user = db.session.query(User).filter(User.email_address == login).first()
 
     if not user or not user.check_password(password):
         return "Login ou mot de passe incorrect"
@@ -378,7 +380,11 @@ def login():
 @app.route('/api/signup', methods = ['POST'])
 def signup():
     signup_request = request.get_json()
-    dbentry = db.session.query(User).filter(User.login == signup_request['login']).first()
+    dbentry_user = db.session.query(User).filter(User.login == signup_request['login']).first()
+    
+    clean_email = sanitize_email(signup_request['email_address'])
+    dbentry_email = db.session.query(User).filter(User.email_address == clean_email).first()
+    
 
     remember_me_string = request.get_json()['remember_me']
     
@@ -387,20 +393,22 @@ def signup():
     else:
         remember_me = False
 
-    if dbentry == None:
-        birthdate = string_to_date(signup_request['birthdate'])
-        clean_email = sanitize_email(signup_request['email_address'])
-        if birthdate != "Incorrect date format" and clean_email:
-            user = User(signup_request['first_name'], signup_request['surname'], signup_request['login'], signup_request['password'], birthdate, clean_email)
-            db.session.add(user)
-            db.session.commit()
-            login_user(user, remember=remember_me)
-            return "Inscription réussie"
-        else:
-            if birthdate == "Incorrect date format":
-                return "Incorrect date format"
+    if dbentry_user == None:
+        if dbentry_email == None:
+            birthdate = string_to_date(signup_request['birthdate'])
+            if birthdate != "Incorrect date format" and clean_email:
+                user = User(signup_request['first_name'], signup_request['surname'], signup_request['login'], signup_request['password'], birthdate, clean_email)
+                db.session.add(user)
+                db.session.commit()
+                login_user(user, remember=remember_me)
+                return "Inscription réussie"
             else:
-                return 'Incorrect email format'
+                if birthdate == "Incorrect date format":
+                    return "Incorrect date format"
+                else:
+                    return 'Incorrect email format'
+        else:
+            return "Email already used"
     else:
         return "Login already used"
 
