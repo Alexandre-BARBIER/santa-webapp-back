@@ -48,10 +48,10 @@ GROUP_PEPPER = os.environ['GROUP_PEPPER']
 # Extract CORS configuration
 cors_host = os.environ['CORS_HOST']
 
-if server_debug:
-    cors_protocol = 'http'
-else:
-    cors_protocol = 'https'
+# if server_debug:
+#     cors_protocol = 'http'
+# else:
+#     cors_protocol = 'https'
 
 # Extract Account Inactivity Policy Configuration
 max_inactivity_allowed = int(os.environ['MAX_INACTIVITY'])
@@ -99,9 +99,9 @@ app.config['MAIL_DEFAULT_SENDER'] = (os.environ['MAIL_NAME'], os.environ['MAIL_U
 
 mail = Mail(app)
 
-if not(server_debug):
-    app.config['SESSION_COOKIE_SECURE'] = True
-    app.config['REMEMBER_COOKIE_SECURE'] = True
+# if not(server_debug):
+#     app.config['SESSION_COOKIE_SECURE'] = True
+#     app.config['REMEMBER_COOKIE_SECURE'] = True
 
 db = SQLAlchemy(app)
 ####################################################################################################
