@@ -834,7 +834,11 @@ def show_groups():
     public_groups = db.session.query(GiftGroup).filter(GiftGroup.visibility != 'protected').all()
     groups = []
     for group in public_groups:
-        group_data = {'id': group.id, 'name': group.name}
+        group_data = {
+            'id': group.id, 
+            'name': group.name,
+            'visibility': group.visibility
+        }
         groups.append(group_data)
     return jsonify(groups)
 
