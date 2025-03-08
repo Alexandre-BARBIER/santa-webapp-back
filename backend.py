@@ -277,6 +277,17 @@ class SecretSantaPair(db.Model):
        self.gifterID = gifterID
        self.groupID = groupID
 
+class SecretSantaExclusion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    groupID = db.Column(db.Integer)
+    userID = db.Column(db.Integer)  # The user who cannot be paired with excludedUserID
+    excludedUserID = db.Column(db.Integer)  # The user who should not receive a gift from userID
+
+    def __init__(self, groupID, userID, excludedUserID):
+        self.groupID = groupID
+        self.userID = userID
+        self.excludedUserID = excludedUserID
+
 ####################################################################################################
 ###########################################   FONCTIONS   ##########################################
 ####################################################################################################
@@ -319,21 +330,62 @@ def sanitize_email(email):
     return email
 
 def generate_secret_pairs(users, group):
+    # Get all exclusions for this group
+    exclusions = db.session.query(SecretSantaExclusion).filter(SecretSantaExclusion.groupID == group).all()
+    
+    # Create a dictionary of excluded receivers for each user
+    excluded_receivers = {}
+    for user in users:
+        excluded_receivers[user] = [e.excludedUserID for e in exclusions if e.userID == user]
+    
+    # Create a copy of users for receivers
+    available_receivers = users.copy()
+    gifters = users.copy()
+    pairs = []
+    
+    # Try to find a valid assignment using backtracking
+    if find_valid_assignment(gifters, available_receivers, excluded_receivers, pairs):
+        # Save the pairs to the database
+        for pair in pairs:
+            gifter, receiver = pair
+            santa_pair = SecretSantaPair(receiver, gifter, group)
+            db.session.add(santa_pair)
+        db.session.commit()
+        return 'OK'
+    else:
+        return 'Cannot create valid pairings with current exclusions'
 
-    first_user = users[0]
-    receiver = users[0]
-    while users != []:
-        users.remove(receiver)
-        if len(users) != 0:
-            gifter = random.choice(users)
-        else:
-            gifter = first_user
-        pair = SecretSantaPair(receiver,gifter,group)
-        db.session.add(pair)
-        receiver = gifter
-    db.session.commit()
+def find_valid_assignment(gifters, available_receivers, excluded_receivers, pairs):
+    # Base case: all gifters have been assigned
+    if not gifters:
+        return True
+    
+    gifters = random.shuffle(gifters)
+    available_receivers = random.shuffle(available_receivers)
 
-    return 'OK'
+    current_gifter = gifters[0]
+    remaining_gifters = gifters[1:]
+    
+    # Try each available receiver
+    for i, receiver in enumerate(available_receivers):
+        # Skip if the receiver is the gifter or in the exclusion list
+        if receiver == current_gifter or receiver in excluded_receivers.get(current_gifter, []):
+            continue
+        
+        # Try this receiver
+        new_available_receivers = available_receivers.copy()
+        new_available_receivers.pop(i)
+        pairs.append((current_gifter, receiver))
+        
+        # Recursively try to assign the rest
+        if find_valid_assignment(remaining_gifters, new_available_receivers, excluded_receivers, pairs):
+            return True
+        
+        # If we get here, this receiver didn't work out, backtrack
+        pairs.pop()
+    
+    # If we get here, no valid receiver was found
+    return False
     
 
 ####################################################################################################
@@ -844,11 +896,11 @@ def group_info(group_id):
     userids = set()
     for gift_group_member in gift_group_members:
         userids.add(gift_group_member.memberID)
-    logins = []
+    group_users = []
     for userid in userids:
         user = db.session.query(User).filter(User.id==userid).first()
-        logins.append(user.login)
-    group_json['members'] = logins
+        group_users.append({"id": user.id, "login": user.login})
+    group_json['members'] = group_users
     group_json['status'] = 'OK'
     return jsonify(group_json)
 
@@ -995,7 +1047,7 @@ def secret_stanta_start():
     try:
         status = generate_secret_pairs(userids, group.id)
         if status != 'OK':
-            return 'Pairs couldn\'t be generated'
+            return status  # Return error message if constraints can't be satisfied
 
         group.secret_santa_active = True
         group.secret_santa_date = scheduled_date
@@ -1112,6 +1164,112 @@ def is_active(group_id):
     else:
         info_json['secret_santa'] = 'false'
     return jsonify(info_json)
+
+@app.route('/api/exclusions/group/<int:group_id>', methods=['GET'])
+@login_required
+def get_exclusions(group_id):
+    user_id = current_user.id
+    group = db.session.query(GiftGroup).filter(GiftGroup.id == group_id).first()
+    
+    if group is None:
+        return jsonify({'status': 'Invalid group'})
+    
+    # Check if user is admin of the group
+    if str(group.creatorID) != str(user_id):
+        return jsonify({'status': 'Only group admin can manage exclusions'})
+    
+    # Get all exclusions for this group
+    exclusions = db.session.query(SecretSantaExclusion).filter(SecretSantaExclusion.groupID == group_id).all()
+    
+    # Format exclusions for the response
+    formatted_exclusions = []
+    for exclusion in exclusions:
+        user = db.session.query(User).filter(User.id == exclusion.userID).first()
+        excluded_user = db.session.query(User).filter(User.id == exclusion.excludedUserID).first()
+        
+        formatted_exclusions.append({
+            'id': exclusion.id,
+            'userID': exclusion.userID,
+            'userName': user.login if user else 'Unknown',
+            'excludedUserID': exclusion.excludedUserID,
+            'excludedUserName': excluded_user.login if excluded_user else 'Unknown'
+        })
+    
+    return jsonify({
+        'status': 'OK',
+        'exclusions': formatted_exclusions
+    })
+
+@app.route('/api/exclusions/add', methods=['POST'])
+@login_required
+def add_exclusion():
+    user_id = current_user.id
+    request_data = request.get_json()
+    
+    group_id = request_data.get('groupID')
+    excluded_user_id = request_data.get('excludedUserID')
+    
+    group = db.session.query(GiftGroup).filter(GiftGroup.id == group_id).first()
+    
+    if group is None:
+        return jsonify({'status': 'Invalid group'})
+    
+    # Check if user is admin of the group
+    if str(group.creatorID) != str(user_id):
+        return jsonify({'status': 'Only group admin can manage exclusions'})
+    
+    # Check if both users are in the group
+    user1_in_group = user_in_group(request_data.get('userID'), group_id)
+    user2_in_group = user_in_group(excluded_user_id, group_id)
+    
+    if not user1_in_group or not user2_in_group:
+        return jsonify({'status': 'Users must be in the group'})
+    
+    # Check if exclusion already exists
+    existing = db.session.query(SecretSantaExclusion).filter(
+        SecretSantaExclusion.groupID == group_id,
+        SecretSantaExclusion.userID == request_data.get('userID'),
+        SecretSantaExclusion.excludedUserID == excluded_user_id
+    ).first()
+    
+    if existing:
+        return jsonify({'status': 'Exclusion already exists'})
+    
+    # Create new exclusion
+    exclusion = SecretSantaExclusion(
+        group_id,
+        request_data.get('userID'),
+        excluded_user_id
+    )
+    
+    db.session.add(exclusion)
+    db.session.commit()
+    
+    return jsonify({'status': 'Exclusion added'})
+
+@app.route('/api/exclusions/delete', methods=['DELETE'])
+@login_required
+def delete_exclusion():
+    user_id = current_user.id
+    request_data = request.get_json()
+    
+    exclusion_id = request_data.get('exclusionID')
+    
+    exclusion = db.session.query(SecretSantaExclusion).filter(SecretSantaExclusion.id == exclusion_id).first()
+    
+    if exclusion is None:
+        return jsonify({'status': 'Invalid exclusion'})
+    
+    group = db.session.query(GiftGroup).filter(GiftGroup.id == exclusion.groupID).first()
+    
+    # Check if user is admin of the group
+    if str(group.creatorID) != str(user_id):
+        return jsonify({'status': 'Only group admin can manage exclusions'})
+    
+    db.session.delete(exclusion)
+    db.session.commit()
+    
+    return jsonify({'status': 'Exclusion deleted'})
 
 ####################################################################################################
 ###########################################   EXECUTION   ##########################################
