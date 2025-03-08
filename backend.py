@@ -1067,23 +1067,23 @@ def secret_stanta_start():
     if len(userids) < 3:
         return 'Not enough members in the group, you must have at least 3 members'
     
-    try:
-        print("Point de contrôle 1")
-        status = generate_secret_pairs(userids, group.id)
-        print("Point de contrôle 2")
-        if status != 'OK':
-            return status  # Return error message if constraints can't be satisfied
+    # try:
+    print("Point de contrôle 1")
+    status = generate_secret_pairs(userids, group.id)
+    print("Point de contrôle 2")
+    if status != 'OK':
+        return status  # Return error message if constraints can't be satisfied
 
-        print("Point de contrôle 3")
-        group.secret_santa_active = True
-        print("Point de contrôle 4")
-        group.secret_santa_date = scheduled_date
-        print("Point de contrôle 5")
-        db.session.commit()
-        return "Secret Santa started"
-    except Exception as e:
-        print(e)
-        return "Unexpected error"
+    print("Point de contrôle 3")
+    group.secret_santa_active = True
+    print("Point de contrôle 4")
+    group.secret_santa_date = scheduled_date
+    print("Point de contrôle 5")
+    db.session.commit()
+    return "Secret Santa started"
+    # except Exception as e:
+    #     print(e)
+    #     return "Unexpected error"
 
 @app.route('/api/secret/reschedule', methods=['POST'])
 @login_required
