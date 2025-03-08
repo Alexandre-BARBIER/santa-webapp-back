@@ -831,9 +831,9 @@ def my_groups():
 @app.route('/api/group/all', methods=['GET'])
 @login_required
 def show_groups():
-    public_groups = db.session.query(GiftGroup).filter(GiftGroup.visibility != 'protected').all()
+    db_groups = db.session.query(GiftGroup).all()
     groups = []
-    for group in public_groups:
+    for group in db_groups:
         group_data = {
             'id': group.id, 
             'name': group.name,
