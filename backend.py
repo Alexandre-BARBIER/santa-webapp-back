@@ -379,8 +379,8 @@ def find_valid_assignment(gifters, available_receivers, excluded_receivers, pair
     if not gifters:
         return True
     
-    gifters = random.shuffle(gifters)
-    available_receivers = random.shuffle(available_receivers)
+    random.shuffle(gifters)
+    random.shuffle(available_receivers)
 
     print("Point de Contrôle 2.4.2")
 
