@@ -330,21 +330,37 @@ def sanitize_email(email):
     return email
 
 def generate_secret_pairs(users, group):
+    
+    print("Point de Contrôle 2.1")
+
     # Get all exclusions for this group
     exclusions = db.session.query(SecretSantaExclusion).filter(SecretSantaExclusion.groupID == group).all()
-    
+
+    print("Point de Contrôle 2.2")
+    print(exclusions)
+
     # Create a dictionary of excluded receivers for each user
     excluded_receivers = {}
     for user in users:
         excluded_receivers[user] = [e.excludedUserID for e in exclusions if e.userID == user]
-    
+
+    print("Point de Contrôle 2.3")
+    print(excluded_receivers)
+
     # Create a copy of users for receivers
     available_receivers = users.copy()
     gifters = users.copy()
     pairs = []
-    
+
+    print("Point de Contrôle 2.4")
+    print(available_receivers)
+
     # Try to find a valid assignment using backtracking
     if find_valid_assignment(gifters, available_receivers, excluded_receivers, pairs):
+        
+        print("Point de Contrôle 2.5")
+        print(pairs)
+
         # Save the pairs to the database
         for pair in pairs:
             gifter, receiver = pair
@@ -356,6 +372,9 @@ def generate_secret_pairs(users, group):
         return 'Cannot create valid pairings with current exclusions'
 
 def find_valid_assignment(gifters, available_receivers, excluded_receivers, pairs):
+    
+    print("Point de Contrôle 2.4.1")
+
     # Base case: all gifters have been assigned
     if not gifters:
         return True
@@ -363,11 +382,15 @@ def find_valid_assignment(gifters, available_receivers, excluded_receivers, pair
     gifters = random.shuffle(gifters)
     available_receivers = random.shuffle(available_receivers)
 
+    print("Point de Contrôle 2.4.2")
+
     current_gifter = gifters[0]
     remaining_gifters = gifters[1:]
     
     # Try each available receiver
     for i, receiver in enumerate(available_receivers):
+        print(i, receiver)
+        print("Point de Contrôle 2.4.3")
         # Skip if the receiver is the gifter or in the exclusion list
         if receiver == current_gifter or receiver in excluded_receivers.get(current_gifter, []):
             continue
@@ -1045,15 +1068,21 @@ def secret_stanta_start():
         return 'Not enough members in the group, you must have at least 3 members'
     
     try:
+        print("Point de contrôle 1")
         status = generate_secret_pairs(userids, group.id)
+        print("Point de contrôle 2")
         if status != 'OK':
             return status  # Return error message if constraints can't be satisfied
 
+        print("Point de contrôle 3")
         group.secret_santa_active = True
+        print("Point de contrôle 4")
         group.secret_santa_date = scheduled_date
+        print("Point de contrôle 5")
         db.session.commit()
         return "Secret Santa started"
-    except:
+    except Exception as e:
+        print(e)
         return "Unexpected error"
 
 @app.route('/api/secret/reschedule', methods=['POST'])
