@@ -288,6 +288,27 @@ class SecretSantaExclusion(db.Model):
         self.userID = userID
         self.excludedUserID = excludedUserID
 
+class PasswordResetToken(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    token = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, nullable=False)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used = db.Column(db.Boolean, default=False, nullable=False)
+
+    def __init__(self, user_id, token, expiration_hours=1):
+        self.user_id = user_id
+        self.token = token
+        self.created_at = datetime.now()
+        self.expires_at = self.created_at + timedelta(hours=expiration_hours)
+        self.used = False
+
+    def is_valid(self):
+        return not self.used and datetime.now() < self.expires_at
+
+    def mark_as_used(self):
+        self.used = True
+
 ####################################################################################################
 ###########################################   FONCTIONS   ##########################################
 ####################################################################################################
@@ -486,20 +507,20 @@ def forgotpassword():
 
     user = db.session.query(User).filter(User.email_address==forgot_request['email_address']).first()
     
-    char_pool = string.ascii_letters + string.digits
-    password = [
-        random.choice(string.ascii_uppercase),  # At least one uppercase letter
-        random.choice(string.ascii_lowercase),  # At least one lowercase letter
-        random.choice(string.digits),          # At least one digit
-    ]
-    password += random.choices(char_pool, k=10 - len(password))
-
-    random.shuffle(password)
-
-    temporary_password = ''.join(password)
-
-    user.update_password(temporary_password)
+    if not user:
+        # Return success message even if user not found (security best practice)
+        return jsonify({"message": "If an account exists with this email, a password reset link has been sent"}), 200
+    
+    # Generate secure reset token
+    reset_token = secrets.token_urlsafe(64)
+    
+    # Create password reset token entry
+    password_reset = PasswordResetToken(user_id=user.id, token=reset_token, expiration_hours=1)
+    db.session.add(password_reset)
     db.session.commit()
+
+    # Build reset link
+    reset_link = f"{cors_protocol}://{cors_host}/reset-password/{reset_token}"
 
     try:
         recipient = forgot_request['email_address']
@@ -511,7 +532,7 @@ def forgotpassword():
                 <thead>
                     <tr style="background-color: #f4f4f4; border-bottom: 1px solid #ddd;">
                         <th style="padding: 15px; text-align: left;">
-                            <h2 style="margin: 0; color: #333;">Password Reset Confirmation</h2>
+                            <h2 style="margin: 0; color: #333;">Password Reset Request</h2>
                         </th>
                     </tr>
                 </thead>
@@ -519,23 +540,9 @@ def forgotpassword():
                     <tr>
                         <td style="padding: 20px;">
                             <p>Dear {user.first_name} {user.surname},</p>
-                            <p>We have successfully processed your request to reset your password. Below are your updated login credentials:</p>
-                            <table style="margin: 20px 0; width: 100%;">
-                                <tr>
-                                    <td style="font-weight: bold; color: #555;">Username:</td>
-                                    <td>{user.login}</td>
-                                </tr>
-                                <tr>
-                                    <td style="font-weight: bold; color: #555;">Temporary Password:</td>
-                                    <td><strong>{temporary_password}</strong></td>
-                                </tr>
-                            </table>
-                            <p>For your security, please log in to your account and update your password as soon as possible. You can do so by following these steps:</p>
-                            <ol>
-                                <li>Log in to your account using the temporary password provided.</li>
-                                <li>Click on the <strong>"Change Password"</strong> button.</li>
-                                <li>Enter a new, secure password of your choice and save the changes.</li>
-                            </ol>
+                            <p>We have successfully processed your request to reset your password. Below is a link for you to reset your password:</p>
+                            <br/>
+                            <a>{reset_link}</a>
                             <p style="color: #888;">If you didn’t request a password reset or believe this message was sent in error, please contact me immediately at <a href="{os.environ['MAIL_USER']}" style="color: #007BFF;">{os.environ['MAIL_USER']}</a></p>
                             <p>Thank you for choosing our service. If you have any questions or need further assistance, don't hesitate to reach out.</p>
                             <p>Best regards,</p>
@@ -561,9 +568,64 @@ def forgotpassword():
         msg = Message(subject, recipients=[recipient], html=body)
         mail.send(msg)
 
-        return jsonify({"message": "Email sent successfully"}), 200
+        return jsonify({"message": "If an account exists with this email, a password reset link has been sent"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/validate-reset-token', methods=['GET'])
+def validate_reset_token():
+    token = request.args.get('token')
+    
+    if not token:
+        return jsonify({"valid": False, "error": "Token is required"}), 400
+    
+    reset_token = db.session.query(PasswordResetToken).filter(PasswordResetToken.token == token).first()
+    
+    if not reset_token:
+        return jsonify({"valid": False, "error": "Invalid token"}), 404
+    
+    if not reset_token.is_valid():
+        return jsonify({"valid": False, "error": "Token has expired or already been used"}), 400
+    
+    user = db.session.query(User).filter(User.id == reset_token.user_id).first()
+    
+    return jsonify({
+        "valid": True,
+        "first_name": user.first_name,
+        "user_id": user.id
+    }), 200
+
+@app.route('/api/reset-password', methods=['POST'])
+def reset_password():
+    reset_request = request.get_json()
+    token = reset_request.get('token')
+    new_password = reset_request.get('new_password')
+    
+    if not token or not new_password:
+        return jsonify({"error": "Token and new password are required"}), 400
+    
+    reset_token = db.session.query(PasswordResetToken).filter(PasswordResetToken.token == token).first()
+    
+    if not reset_token:
+        return jsonify({"error": "Invalid token"}), 404
+    
+    if not reset_token.is_valid():
+        return jsonify({"error": "Token has expired or already been used"}), 400
+    
+    user = db.session.query(User).filter(User.id == reset_token.user_id).first()
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    # Update user password
+    user.update_password(new_password)
+    
+    # Mark token as used
+    reset_token.mark_as_used()
+    
+    db.session.commit()
+    
+    return jsonify({"message": "Password successfully reset"}), 200
 
 @app.route('/api/changepassword', methods = ['PUT'])
 @login_required
