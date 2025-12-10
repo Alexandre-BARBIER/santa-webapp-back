@@ -541,8 +541,14 @@ def forgotpassword():
                         <td style="padding: 20px;">
                             <p>Dear {user.first_name} {user.surname},</p>
                             <p>We have successfully processed your request to reset your password. Below is a link for you to reset your password:</p>
-                            <br/>
-                            <a>{reset_link}</a>
+
+                            <div style="text-align: center; margin: 20px 0;">
+                                <a href="{reset_link}" style="display: inline-block; padding: 15px 30px; background-color: #dc3545; color: #ffffff; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px;">Reset My Password</a>
+                            </div>
+                            <p style="font-size: 14px; color: #666;">If the button doesn't work, use this link instead:</p>
+                            <p style="word-break: break-all;"><a href="{reset_link}" style="color: #007BFF;">{reset_link}</a></p>
+                            <p style="font-size: 12px; color: #888; margin-top: 20px;">This link will expire in 1 hour.</p>
+                            
                             <p style="color: #888;">If you didn’t request a password reset or believe this message was sent in error, please contact me immediately at <a href="{os.environ['MAIL_USER']}" style="color: #007BFF;">{os.environ['MAIL_USER']}</a></p>
                             <p>Thank you for choosing our service. If you have any questions or need further assistance, don't hesitate to reach out.</p>
                             <p>Best regards,</p>
