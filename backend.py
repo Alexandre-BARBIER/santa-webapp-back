@@ -310,6 +310,27 @@ class PasswordResetToken(db.Model):
     def mark_as_used(self):
         self.used = True
 
+
+class GroupInvitation(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    groupID = db.Column(db.Integer, nullable=False)
+    email = db.Column(db.String(100), nullable=False)
+    token = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, nullable=False)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used = db.Column(db.Boolean, default=False, nullable=False)
+
+    def __init__(self, groupID, email, token, expiration_days=7):
+        self.groupID = groupID
+        self.email = email
+        self.token = token
+        self.created_at = datetime.now()
+        self.expires_at = self.created_at + timedelta(days=expiration_days)
+        self.used = False
+
+    def is_valid(self):
+        return not self.used and datetime.now() < self.expires_at
+
 ####################################################################################################
 ###########################################   FONCTIONS   ##########################################
 ####################################################################################################
@@ -350,6 +371,49 @@ def sanitize_email(email):
     if not re.match(email_regex, email):
         return None  # Return None if the email is invalid
     return email
+
+def send_group_invitation_email(recipient, group_name, inviter_login, invite_link):
+    subject = f"Invitation to join {group_name} on Santa Zapy"
+    body = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <table style="width: 100%; max-width: 600px; margin: 0 auto; border-collapse: collapse; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+            <thead>
+                <tr style="background-color: #f4f4f4; border-bottom: 1px solid #ddd;">
+                    <th style="padding: 15px; text-align: left;">
+                        <h2 style="margin: 0; color: #333;">You're invited!</h2>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td style="padding: 20px;">
+                        <p>Hello,</p>
+                        <p>{inviter_login} invites you to join the group <b>{group_name}</b> on Santa Zapy to organise your Christmas gifts. Create your account with the button below and you will be added to the group automatically.</p>
+
+                        <div style="text-align: center; margin: 20px 0;">
+                            <a href="{invite_link}" style="display: inline-block; padding: 15px 30px; background-color: #dc3545; color: #ffffff; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px;">Create my account</a>
+                        </div>
+                        <p style="font-size: 14px; color: #666;">If the button doesn't work, use this link instead:</p>
+                        <p style="word-break: break-all;"><a href="{invite_link}" style="color: #007BFF;">{invite_link}</a></p>
+                        <p style="font-size: 12px; color: #888; margin-top: 20px;">This invitation will expire in 7 days.</p>
+
+                        <p>Thank you for choosing our service. If you have any questions or need further assistance, don't hesitate to reach out.</p>
+                        <p>Best regards,</p>
+                        <p style="font-weight: bold;">Santa Zapy<br></p>
+                    </td>
+                </tr>
+                <tr style="background-color: #f4f4f4;">
+                    <td style="text-align: center; padding: 10px;">
+                        <p style="margin: 0; font-size: 12px; color: #888;">© 2025 Santa Zapy. All rights reserved.</p>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </body>
+    </html>
+    """
+    mail.send(Message(subject, recipients=[recipient], html=body))
 
 def generate_secret_pairs(users, group):
     
@@ -473,6 +537,15 @@ def signup():
     dbentry_user = db.session.query(User).filter(User.login == signup_request['login']).first()
     
     clean_email = sanitize_email(signup_request['email_address'])
+
+    invite_token = signup_request.get('invite_token')
+    invitation = None
+    if invite_token:
+        invitation = db.session.query(GroupInvitation).filter(GroupInvitation.token == invite_token).first()
+        if invitation is None or not invitation.is_valid():
+            return "Invalid or expired invitation"
+        if clean_email != invitation.email:
+            return "Email does not match the invitation"
     dbentry_email = db.session.query(User).filter(User.email_address == clean_email).first()
     
 
@@ -490,6 +563,18 @@ def signup():
                 user = User(signup_request['first_name'], signup_request['surname'], signup_request['login'], signup_request['password'], birthdate, clean_email)
                 db.session.add(user)
                 db.session.commit()
+                if invitation is not None:
+                    pending_invitations = db.session.query(GroupInvitation).filter(
+                        GroupInvitation.email == clean_email
+                    ).all()
+                    for pending in pending_invitations:
+                        if not pending.is_valid():
+                            continue
+                        pending.used = True
+                        invited_group = db.session.query(GiftGroup).filter(GiftGroup.id == pending.groupID).first()
+                        if invited_group is not None and not invited_group.secret_santa_active and not user_in_group(user.id, pending.groupID):
+                            db.session.add(GiftGroupMember(pending.groupID, user.id))
+                    db.session.commit()
                 login_user(user, remember=remember_me)
                 return "Inscription réussie"
             else:
@@ -602,6 +687,24 @@ def validate_reset_token():
         "user_id": user.id
     }), 200
 
+@app.route('/api/invitation/validate', methods=['GET'])
+def validate_invitation():
+    token = request.args.get('token')
+    invalid = jsonify({"valid": False, "error": "Invalid or expired invitation"})
+
+    if not token:
+        return invalid
+
+    invitation = db.session.query(GroupInvitation).filter(GroupInvitation.token == token).first()
+    if invitation is None or not invitation.is_valid():
+        return invalid
+
+    group = db.session.query(GiftGroup).filter(GiftGroup.id == invitation.groupID).first()
+    if group is None:
+        return invalid
+
+    return jsonify({"valid": True, "email": invitation.email, "group_name": group.name})
+
 @app.route('/api/reset-password', methods=['POST'])
 def reset_password():
     reset_request = request.get_json()
@@ -664,12 +767,15 @@ def delete_user():
     for group in admin_groups:
         members = db.session.query(GiftGroupMember).filter(GiftGroupMember.groupID == group.id).all()
         pairs = db.session.query(SecretSantaPair).filter(SecretSantaPair.groupID == group.id).all()
+        invitations = db.session.query(GroupInvitation).filter(GroupInvitation.groupID == group.id).all()
         db.session.delete(group)
         
         for member in members:
             db.session.delete(member)
         for pair in pairs:
             db.session.delete(pair)
+        for invitation in invitations:
+            db.session.delete(invitation)
 
     memberships = db.session.query(GiftGroupMember).filter(GiftGroupMember.memberID == user_id).all()
 
@@ -1161,6 +1267,112 @@ def remove_group_member():
     db.session.commit()
     return jsonify({'status': 'Member removed'})
 
+@app.route('/api/group/invite', methods=['POST'])
+@login_required
+def invite_group_member():
+    user_id = current_user.id
+    request_data = request.get_json()
+
+    try:
+        group_id = int(request_data.get('groupID'))
+    except (TypeError, ValueError):
+        return jsonify({'status': 'Invalid request'})
+
+    group = db.session.query(GiftGroup).filter(GiftGroup.id == group_id).first()
+
+    if group is None:
+        return jsonify({'status': 'Group does not exist'})
+
+    if str(group.creatorID) != str(user_id):
+        return jsonify({'status': 'You are not an admin of the group'})
+
+    if group.secret_santa_active:
+        return jsonify({'status': 'Stop the Secret Santa before changing the members'})
+
+    clean_email = sanitize_email(request_data.get('email') or '')
+    if clean_email is None:
+        return jsonify({'status': 'Incorrect email format'})
+
+    user = db.session.query(User).filter(User.email_address == clean_email).first()
+    if user is not None:
+        if user_in_group(user.id, group_id):
+            return jsonify({'status': 'Already in group'})
+        db.session.add(GiftGroupMember(group_id, user.id))
+        db.session.commit()
+        return jsonify({'status': 'Member added'})
+
+    pending = db.session.query(GroupInvitation).filter(
+        GroupInvitation.groupID == group_id, GroupInvitation.email == clean_email
+    ).all()
+    if any(invitation.is_valid() for invitation in pending):
+        return jsonify({'status': 'Invitation already pending'})
+
+    invitation = GroupInvitation(group_id, clean_email, secrets.token_urlsafe(32))
+    db.session.add(invitation)
+    db.session.commit()
+
+    invite_link = f"{cors_protocol}://{cors_host}/invite/{invitation.token}"
+
+    try:
+        send_group_invitation_email(clean_email, group.name, current_user.login, invite_link)
+    except Exception:
+        db.session.delete(invitation)
+        db.session.commit()
+        return jsonify({'status': 'Failed to send the invitation email'})
+
+    return jsonify({'status': 'Invitation sent'})
+
+@app.route('/api/group/invitations/<int:group_id>', methods=['GET'])
+@login_required
+def group_invitations(group_id):
+    user_id = current_user.id
+
+    group = db.session.query(GiftGroup).filter(GiftGroup.id == group_id).first()
+
+    if group is None:
+        return jsonify({'status': 'Group does not exist'})
+
+    if str(group.creatorID) != str(user_id):
+        return jsonify({'status': 'You are not an admin of the group'})
+
+    invitations = db.session.query(GroupInvitation).filter(
+        GroupInvitation.groupID == group_id
+    ).order_by(GroupInvitation.created_at).all()
+
+    return jsonify({
+        'status': 'OK',
+        'invitations': [
+            {'id': invitation.id, 'email': invitation.email, 'expires': date_to_string(invitation.expires_at)}
+            for invitation in invitations if invitation.is_valid()
+        ]
+    })
+
+@app.route('/api/group/invitation/cancel', methods=['DELETE'])
+@login_required
+def cancel_group_invitation():
+    user_id = current_user.id
+    request_data = request.get_json()
+
+    try:
+        invitation_id = int(request_data.get('invitationID'))
+    except (TypeError, ValueError):
+        return jsonify({'status': 'Invalid invitation'})
+
+    invitation = db.session.query(GroupInvitation).filter(GroupInvitation.id == invitation_id).first()
+    if invitation is None:
+        return jsonify({'status': 'Invalid invitation'})
+
+    group = db.session.query(GiftGroup).filter(GiftGroup.id == invitation.groupID).first()
+    if group is None:
+        return jsonify({'status': 'Group does not exist'})
+
+    if str(group.creatorID) != str(user_id):
+        return jsonify({'status': 'You are not an admin of the group'})
+
+    db.session.delete(invitation)
+    db.session.commit()
+    return jsonify({'status': 'Invitation cancelled'})
+
 @app.route('/api/group/delete', methods=['DELETE'])
 @login_required
 def delete_group():
@@ -1184,12 +1396,15 @@ def delete_group():
     else:
         members = db.session.query(GiftGroupMember).filter(GiftGroupMember.groupID == group.id).all()
         pairs = db.session.query(SecretSantaPair).filter(SecretSantaPair.groupID == group.id).all()
+        invitations = db.session.query(GroupInvitation).filter(GroupInvitation.groupID == group.id).all()
         db.session.delete(group)
         
         for member in members:
             db.session.delete(member)
         for pair in pairs:
             db.session.delete(pair)
+        for invitation in invitations:
+            db.session.delete(invitation)
         db.session.commit()
         return "The group has been removed."
 
