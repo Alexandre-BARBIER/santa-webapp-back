@@ -1,11 +1,20 @@
 <!doctype html>
-<html>
+<html lang="en">
     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Awesome Santa WebApp</title>
+        <style>
+            body { font-family: sans-serif; margin: 1em; }
+            .table-wrapper { overflow-x: auto; }
+            table { border-collapse: collapse; }
+            th, td { border: 1px solid #888; padding: 0.4em 0.8em; text-align: left; overflow-wrap: anywhere; }
+        </style>
     </head>
     <body>
         <h1>Database content</h1>
-        <table border = 1>
+        <div class="table-wrapper">
+        <table>
             <tr>
                 <th> Id </th>
                 <th> Destination url </th>
@@ -23,6 +32,7 @@
                 </tr>
             {% endfor %}
         </table>
+        </div>
 
     </body>
 </html>
