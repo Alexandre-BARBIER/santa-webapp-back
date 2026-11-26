@@ -16,6 +16,7 @@ from argon2 import PasswordHasher, exceptions
 from flask import Flask, request, jsonify, abort
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy 
+from sqlalchemy import func
 from sqlalchemy_utils import database_exists, create_database
 from flask_login import LoginManager, login_user, UserMixin, login_required, logout_user, current_user
 from flask_mail import Mail, Message
@@ -1060,6 +1061,105 @@ def leave_group():
         db.session.delete(membership)
         db.session.commit()
         return "Group left"
+
+@app.route('/api/group/candidates/<int:group_id>', methods=['GET'])
+@login_required
+def group_candidates(group_id):
+    # Users of the site that are not yet in the group, optionally filtered by login (admin only)
+    user_id = current_user.id
+    group = db.session.query(GiftGroup).filter(GiftGroup.id == group_id).first()
+
+    if group is None:
+        return jsonify({'status': 'Group does not exist'})
+
+    if str(group.creatorID) != str(user_id):
+        return jsonify({'status': 'You are not an admin of the group'})
+
+    query = request.args.get('q', '').strip().lower()
+    current_members = db.session.query(GiftGroupMember.memberID).filter(GiftGroupMember.groupID == group_id)
+    candidates = db.session.query(User).filter(~User.id.in_(current_members))
+    if query != '':
+        candidates = candidates.filter(func.lower(User.login).contains(query, autoescape=True))
+    candidates = candidates.order_by(User.login).limit(20).all()
+
+    return jsonify({
+        'status': 'OK',
+        'users': [{'id': candidate.id, 'login': candidate.login} for candidate in candidates]
+    })
+
+@app.route('/api/group/member/add', methods=['POST'])
+@login_required
+def add_group_member():
+    user_id = current_user.id
+    request_data = request.get_json()
+
+    try:
+        group_id = int(request_data.get('groupID'))
+        member_id = int(request_data.get('userID'))
+    except (TypeError, ValueError):
+        return jsonify({'status': 'Invalid request'})
+
+    group = db.session.query(GiftGroup).filter(GiftGroup.id == group_id).first()
+
+    if group is None:
+        return jsonify({'status': 'Group does not exist'})
+
+    if str(group.creatorID) != str(user_id):
+        return jsonify({'status': 'You are not an admin of the group'})
+
+    if group.secret_santa_active:
+        return jsonify({'status': 'Stop the Secret Santa before changing the members'})
+
+    if db.session.query(User).filter(User.id == member_id).first() is None:
+        return jsonify({'status': 'User does not exist'})
+
+    if user_in_group(member_id, group_id):
+        return jsonify({'status': 'Already in group'})
+
+    db.session.add(GiftGroupMember(group_id, member_id))
+    db.session.commit()
+    return jsonify({'status': 'Member added'})
+
+@app.route('/api/group/member/remove', methods=['DELETE'])
+@login_required
+def remove_group_member():
+    user_id = current_user.id
+    request_data = request.get_json()
+
+    try:
+        group_id = int(request_data.get('groupID'))
+        member_id = int(request_data.get('userID'))
+    except (TypeError, ValueError):
+        return jsonify({'status': 'Invalid request'})
+
+    group = db.session.query(GiftGroup).filter(GiftGroup.id == group_id).first()
+
+    if group is None:
+        return jsonify({'status': 'Group does not exist'})
+
+    if str(group.creatorID) != str(user_id):
+        return jsonify({'status': 'You are not an admin of the group'})
+
+    if group.secret_santa_active:
+        return jsonify({'status': 'Stop the Secret Santa before changing the members'})
+
+    memberships = db.session.query(GiftGroupMember).filter_by(groupID=group_id, memberID=member_id).all()
+    if memberships == []:
+        return jsonify({'status': 'Not in group'})
+
+    for membership in memberships:
+        db.session.delete(membership)
+
+    # Exclusions involving the removed member are meaningless now
+    exclusions = db.session.query(SecretSantaExclusion).filter(
+        SecretSantaExclusion.groupID == group_id,
+        db.or_(SecretSantaExclusion.userID == member_id, SecretSantaExclusion.excludedUserID == member_id)
+    ).all()
+    for exclusion in exclusions:
+        db.session.delete(exclusion)
+
+    db.session.commit()
+    return jsonify({'status': 'Member removed'})
 
 @app.route('/api/group/delete', methods=['DELETE'])
 @login_required
