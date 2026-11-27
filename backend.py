@@ -2,6 +2,8 @@
 ###########################################   IMPORTS   ############################################
 ####################################################################################################
 import os
+import hashlib
+import hmac
 import re
 import json
 import secrets
@@ -20,6 +22,10 @@ from sqlalchemy import func
 from sqlalchemy_utils import database_exists, create_database
 from flask_login import LoginManager, login_user, UserMixin, login_required, logout_user, current_user
 from flask_mail import Mail, Message
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from markupsafe import escape
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from datetime import datetime, timedelta
 
@@ -58,12 +64,20 @@ if server_debug:
 max_inactivity_allowed = int(os.environ['MAX_INACTIVITY'])
 check_interval = int(os.environ['INACTIVITY_CHECK'])
 
+# Number of reverse proxies in front of the app (CapRover nginx = 1)
+trusted_proxy_count = int(os.environ.get('TRUSTED_PROXY_COUNT', '1'))
+
+# Set RATE_LIMIT_ENABLED=False to disable rate limiting (enabled by default)
+rate_limit_enabled = os.environ.get('RATE_LIMIT_ENABLED', 'True').strip().lower() != 'false'
+
 
 ####################################################################################################
 ##########################################   APP CONFIG  ###########################################
 ####################################################################################################
 
 app = Flask(__name__)
+if trusted_proxy_count > 0:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=trusted_proxy_count)
 CORS(app)
 
 CORS(
@@ -89,6 +103,7 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['REMEMBER_COOKIE_HTTPONLY'] = True
 app.config['REMEMBER_COOKIE_SAMESITE'] = 'Lax'
+app.config['REMEMBER_COOKIE_DURATION'] = timedelta(days=30)
 
 # Configuration for Flask-Mail
 app.config['MAIL_SERVER'] = os.environ['MAIL_SERVER']
@@ -105,6 +120,23 @@ if not(server_debug):
     app.config['REMEMBER_COOKIE_SECURE'] = True
 
 db = SQLAlchemy(app)
+
+limiter = Limiter(get_remote_address, app=app, storage_uri="memory://", enabled=rate_limit_enabled)
+
+def user_or_ip_key():
+    if current_user.is_authenticated:
+        return 'user:' + str(current_user.id)
+    return get_remote_address()
+
+def forgot_email_key():
+    data = request.get_json(silent=True) or {}
+    return 'forgot:' + str(data.get('email_address', '')).strip().lower()
+
+@app.errorhandler(429)
+def ratelimit_handler(e):
+    message = "Too many requests, please try again later"
+    return jsonify({"error": message, "status": message}), 429
+
 ####################################################################################################
 ##########################################   PEPPERING   ###########################################
 ####################################################################################################
@@ -178,6 +210,12 @@ class User(UserMixin, db.Model):
         hashed_password = argon_init.hash(new_password + PEPPER)
         self.hashed_and_peppered_password = encrypt_data(hashed_password, PEPPER)
     
+    def get_session_token(self):
+        return hashlib.sha256(self.hashed_and_peppered_password).hexdigest()[:32]
+
+    def get_id(self):
+        return f"{self.id}:{self.get_session_token()}"
+
     def update_last_login(self):
         self.last_login = datetime.now()
 
@@ -307,9 +345,6 @@ class PasswordResetToken(db.Model):
     def is_valid(self):
         return not self.used and datetime.now() < self.expires_at
 
-    def mark_as_used(self):
-        self.used = True
-
 
 class GroupInvitation(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -352,6 +387,11 @@ def user_in_group(userid, groupid):
 
     return (membership != [])
 
+def invalidate_reset_tokens(user_id):
+    db.session.query(PasswordResetToken).filter(
+        PasswordResetToken.user_id == user_id, PasswordResetToken.used == False
+    ).update({PasswordResetToken.used: True})
+
 def string_to_date(datestring):
     try:
         birthdate = datetime.strptime(datestring, '%d/%m/%Y')
@@ -372,7 +412,21 @@ def sanitize_email(email):
         return None  # Return None if the email is invalid
     return email
 
+LOGIN_MAX_LENGTH = 100
+
+def is_valid_login(login):
+    return isinstance(login, str) and login.strip() != '' and len(login) <= LOGIN_MAX_LENGTH and '@' not in login
+
+PASSWORD_MIN_LENGTH = 10
+PASSWORD_MAX_LENGTH = 128
+
+def is_valid_password(password):
+    return isinstance(password, str) and PASSWORD_MIN_LENGTH <= len(password) <= PASSWORD_MAX_LENGTH
+
 def send_group_invitation_email(recipient, group_name, inviter_login, invite_link):
+    group_name_html = escape(group_name)
+    inviter_login_html = escape(inviter_login)
+    invite_link_html = escape(invite_link)
     subject = f"Invitation to join {group_name} on Santa Zapy"
     body = f"""
     <html>
@@ -389,13 +443,13 @@ def send_group_invitation_email(recipient, group_name, inviter_login, invite_lin
                 <tr>
                     <td style="padding: 20px;">
                         <p>Hello,</p>
-                        <p>{inviter_login} invites you to join the group <b>{group_name}</b> on Santa Zapy to organise your Christmas gifts. Create your account with the button below and you will be added to the group automatically.</p>
+                        <p>{inviter_login_html} invites you to join the group <b>{group_name_html}</b> on Santa Zapy to organise your Christmas gifts. Create your account with the button below and you will be added to the group automatically.</p>
 
                         <div style="text-align: center; margin: 20px 0;">
-                            <a href="{invite_link}" style="display: inline-block; padding: 15px 30px; background-color: #dc3545; color: #ffffff; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px;">Create my account</a>
+                            <a href="{invite_link_html}" style="display: inline-block; padding: 15px 30px; background-color: #dc3545; color: #ffffff; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px;">Create my account</a>
                         </div>
                         <p style="font-size: 14px; color: #666;">If the button doesn't work, use this link instead:</p>
-                        <p style="word-break: break-all;"><a href="{invite_link}" style="color: #007BFF;">{invite_link}</a></p>
+                        <p style="word-break: break-all;"><a href="{invite_link_html}" style="color: #007BFF;">{invite_link_html}</a></p>
                         <p style="font-size: 12px; color: #888; margin-top: 20px;">This invitation will expire in 7 days.</p>
 
                         <p>Thank you for choosing our service. If you have any questions or need further assistance, don't hesitate to reach out.</p>
@@ -506,9 +560,12 @@ def logout():
     return "Logged out"
 
 @app.route('/api/login', methods=['POST'])
+@limiter.limit("10 per minute;50 per hour")
 def login():
     login = request.get_json()['login']
     password = request.get_json()['password']
+    if not isinstance(login, str) or not isinstance(password, str) or len(password) > PASSWORD_MAX_LENGTH:
+        return "Login ou mot de passe incorrect"
     
     remember_me_string = request.get_json()['remember_me']
     
@@ -518,9 +575,10 @@ def login():
         remember_me = False
 
 
-    user = db.session.query(User).filter(User.login == login).first()
-    if not user:
-        user = db.session.query(User).filter(User.email_address == login).first()
+    if '@' in login:
+        user = db.session.query(User).filter(User.email_address == login.strip().lower()).first()
+    else:
+        user = db.session.query(User).filter(User.login == login).first()
 
     if not user or not user.check_password(password):
         return "Login ou mot de passe incorrect"
@@ -532,8 +590,13 @@ def login():
     
 
 @app.route('/api/signup', methods = ['POST'])
+@limiter.limit("5 per hour")
 def signup():
     signup_request = request.get_json()
+    if not is_valid_login(signup_request['login']):
+        return "Invalid login"
+    if not is_valid_password(signup_request['password']):
+        return "Invalid password"
     dbentry_user = db.session.query(User).filter(User.login == signup_request['login']).first()
     
     clean_email = sanitize_email(signup_request['email_address'])
@@ -588,6 +651,8 @@ def signup():
         return "Login already used"
 
 @app.route('/api/forgotpassword', methods=['POST'])
+@limiter.limit("5 per hour")
+@limiter.limit("3 per hour", key_func=forgot_email_key)
 def forgotpassword():
     forgot_request = request.get_json()
 
@@ -625,17 +690,17 @@ def forgotpassword():
                 <tbody>
                     <tr>
                         <td style="padding: 20px;">
-                            <p>Dear {user.first_name} {user.surname},</p>
+                            <p>Dear {escape(user.first_name)} {escape(user.surname)},</p>
                             <p>We have successfully processed your request to reset your password. Below is a link for you to reset your password:</p>
 
                             <div style="text-align: center; margin: 20px 0;">
-                                <a href="{reset_link}" style="display: inline-block; padding: 15px 30px; background-color: #dc3545; color: #ffffff; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px;">Reset My Password</a>
+                                <a href="{escape(reset_link)}" style="display: inline-block; padding: 15px 30px; background-color: #dc3545; color: #ffffff; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px;">Reset My Password</a>
                             </div>
                             <p style="font-size: 14px; color: #666;">If the button doesn't work, use this link instead:</p>
-                            <p style="word-break: break-all;"><a href="{reset_link}" style="color: #007BFF;">{reset_link}</a></p>
+                            <p style="word-break: break-all;"><a href="{escape(reset_link)}" style="color: #007BFF;">{escape(reset_link)}</a></p>
                             <p style="font-size: 12px; color: #888; margin-top: 20px;">This link will expire in 1 hour.</p>
                             
-                            <p style="color: #888;">If you didn’t request a password reset or believe this message was sent in error, please contact me immediately at <a href="{os.environ['MAIL_USER']}" style="color: #007BFF;">{os.environ['MAIL_USER']}</a></p>
+                            <p style="color: #888;">If you didn’t request a password reset or believe this message was sent in error, please contact me immediately at <a href="mailto:{escape(os.environ['MAIL_USER'])}" style="color: #007BFF;">{escape(os.environ['MAIL_USER'])}</a></p>
                             <p>Thank you for choosing our service. If you have any questions or need further assistance, don't hesitate to reach out.</p>
                             <p>Best regards,</p>
                             <p style="font-weight: bold;">Santa Zapy<br></p>
@@ -706,6 +771,7 @@ def validate_invitation():
     return jsonify({"valid": True, "email": invitation.email, "group_name": group.name})
 
 @app.route('/api/reset-password', methods=['POST'])
+@limiter.limit("10 per hour")
 def reset_password():
     reset_request = request.get_json()
     token = reset_request.get('token')
@@ -713,6 +779,9 @@ def reset_password():
     
     if not token or not new_password:
         return jsonify({"error": "Token and new password are required"}), 400
+
+    if not is_valid_password(new_password):
+        return jsonify({"error": f"Password must be between {PASSWORD_MIN_LENGTH} and {PASSWORD_MAX_LENGTH} characters"}), 400
     
     reset_token = db.session.query(PasswordResetToken).filter(PasswordResetToken.token == token).first()
     
@@ -730,30 +799,36 @@ def reset_password():
     # Update user password
     user.update_password(new_password)
     
-    # Mark token as used
-    reset_token.mark_as_used()
+    # Revoke every outstanding reset token (including the current one)
+    invalidate_reset_tokens(user.id)
     
     db.session.commit()
     
     return jsonify({"message": "Password successfully reset"}), 200
 
 @app.route('/api/changepassword', methods = ['PUT'])
+@limiter.limit("10 per hour", key_func=user_or_ip_key)
 @login_required
 def changepassword():
     user_id = current_user.id
     user = db.session.query(User).filter(User.id==user_id).first()
     change_password_request = request.get_json()
     
-    if user.check_password(change_password_request['new_password']):
+    if not is_valid_password(change_password_request['new_password']):
+        return "Invalid password"
+    elif user.check_password(change_password_request['new_password']):
         return "No change made"
     elif not(user.check_password(change_password_request['old_password'])):
         return "No change made, Wrong Password"
     else :
-        current_user.update_password(change_password_request['new_password'])
+        user.update_password(change_password_request['new_password'])
+        invalidate_reset_tokens(user.id)
         db.session.commit()
+        login_user(user, remember='remember_token' in request.cookies)
         return "Update Password"
 
 @app.route('/api/user/delete', methods = ['DELETE'])
+@limiter.limit("10 per hour", key_func=user_or_ip_key)
 @login_required
 def delete_user():
     user_id = current_user.id
@@ -802,6 +877,8 @@ def delete_user():
 @login_required
 def changeprofile():
     change_profile_request = request.get_json()
+    if not is_valid_login(change_profile_request['login']):
+        return "Invalid login"
     user = current_user
     dbentry_user = User.query.filter_by(login=change_profile_request['login']).all()
 
@@ -1113,6 +1190,7 @@ def update_group():
     return "Group updated"
 
 @app.route('/api/group/join', methods=['POST'])
+@limiter.limit("10 per minute;30 per hour", key_func=user_or_ip_key)
 @login_required
 def join_group():
     user_id = current_user.id
@@ -1268,6 +1346,7 @@ def remove_group_member():
     return jsonify({'status': 'Member removed'})
 
 @app.route('/api/group/invite', methods=['POST'])
+@limiter.limit("20 per hour;50 per day", key_func=user_or_ip_key)
 @login_required
 def invite_group_member():
     user_id = current_user.id
@@ -1684,8 +1763,15 @@ if __name__ == '__main__':
     login_manager = LoginManager()
     login_manager.init_app(app)
     @login_manager.user_loader
-    def load_user(user_id):
-        return db.session.get(User, int(user_id))
+    def load_user(session_id):
+        user_id, _, token = str(session_id).partition(':')
+        try:
+            user = db.session.get(User, int(user_id))
+        except ValueError:
+            return None
+        if user is None or not hmac.compare_digest(token, user.get_session_token()):
+            return None
+        return user
     
     if server_debug:
         app.run(host = server_host, port = server_port, debug = server_debug)

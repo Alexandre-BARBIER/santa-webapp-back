@@ -32,6 +32,14 @@ Pour déploiement correctement ce projet sur caprover, il convient de définir l
         
     SERVER_PORT
   </li>
+  <li> Nombre de reverse proxies devant le back (1 pour CapRover seul, 2 si un CDN comme Cloudflare est ajouté devant ; 0 en local sans proxy). Défaut : 1 :
+        
+    TRUSTED_PROXY_COUNT
+  </li>
+  <li> Activation du rate limiting (mettre False pour le désactiver). Défaut : True :
+        
+    RATE_LIMIT_ENABLED
+  </li>
   <h2>Configuration des CORS :</h2>
     <li> Hôte du front autorisé par les CORS :
         
