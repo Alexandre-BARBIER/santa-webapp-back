@@ -2,6 +2,7 @@
 ###########################################   IMPORTS   ############################################
 ####################################################################################################
 import os
+import math
 import hashlib
 import hmac
 import re
@@ -18,7 +19,9 @@ from argon2 import PasswordHasher, exceptions
 from flask import Flask, request, jsonify, abort
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy 
-from sqlalchemy import func
+from sqlalchemy import func, inspect as sa_inspect, text
+from sqlalchemy.engine import URL
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy_utils import database_exists, create_database
 from flask_login import LoginManager, login_user, UserMixin, login_required, logout_user, current_user
 from flask_mail import Mail, Message
@@ -47,6 +50,8 @@ db_name = os.environ['DB_NAME']
 server_host = os.environ['SERVER_HOST']
 server_port = os.environ['SERVER_PORT']
 server_debug = os.environ['SERVER_DEBUG'] == "True"
+if server_debug and server_host not in ('127.0.0.1', 'localhost', '::1'):
+    raise SystemExit("SERVER_DEBUG=True exposes the Werkzeug debugger: SERVER_HOST must be 127.0.0.1, localhost or ::1")
 
 # Extract Password Security configuration
 PEPPER = os.environ['USER_PEPPER']
@@ -70,6 +75,9 @@ trusted_proxy_count = int(os.environ.get('TRUSTED_PROXY_COUNT', '1'))
 # Set RATE_LIMIT_ENABLED=False to disable rate limiting (enabled by default)
 rate_limit_enabled = os.environ.get('RATE_LIMIT_ENABLED', 'True').strip().lower() != 'false'
 
+# Hours an e-mail verification link stays valid (unverified accounts older than this are purged)
+EMAIL_VERIFICATION_HOURS = 24
+
 
 ####################################################################################################
 ##########################################   APP CONFIG  ###########################################
@@ -78,26 +86,22 @@ rate_limit_enabled = os.environ.get('RATE_LIMIT_ENABLED', 'True').strip().lower(
 app = Flask(__name__)
 if trusted_proxy_count > 0:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=trusted_proxy_count)
-CORS(app)
-
-CORS(
-    app,
-    resources={
-        r"/*": {
-            "origins": cors_protocol + "://" + cors_host,
-            "supports_credentials": True,
-            "Access-Control-Allow-Credentials": True,
-        }
-    },
-)
+cors_origin = cors_protocol + "://" + cors_host
+CORS(app, resources={r"/api/*": {"origins": [cors_origin]}}, supports_credentials=True)
 
 def generate_secret_key(length=24):
     alphabet = string.ascii_letters + string.digits + string.punctuation
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mariadb+mariadbconnector://' + username + ':' + password + '@' + db_host + '/' + db_name
+db_url = URL.create(
+    "mariadb+mariadbconnector",
+    username=username, password=password,
+    host=db_host, port=int(db_port), database=db_name,
+)
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url.render_as_string(hide_password=False)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = generate_secret_key()
+app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024
 
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -137,6 +141,23 @@ def ratelimit_handler(e):
     message = "Too many requests, please try again later"
     return jsonify({"error": message, "status": message}), 429
 
+@app.before_request
+def enforce_origin():
+    if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and request.headers.get('Origin') != cors_origin:
+        message = "Invalid origin"
+        return jsonify({"error": message, "status": message}), 403
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'DENY')
+    response.headers.setdefault('Referrer-Policy', 'no-referrer')
+    response.headers.setdefault('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'")
+    response.headers.setdefault('Cache-Control', 'no-store')
+    if not server_debug:
+        response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000')
+    return response
+
 ####################################################################################################
 ##########################################   PEPPERING   ###########################################
 ####################################################################################################
@@ -169,14 +190,15 @@ class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key = True)
     first_name = db.Column(db.String(100))
     surname = db.Column(db.String(100))
-    login = db.Column(db.String(100))
+    login = db.Column(db.String(100), unique=True)
     hashed_and_peppered_password = db.Column(db.LargeBinary)
     birthdate = db.Column(db.Date())
-    email_address = db.Column(db.String(100))
+    email_address = db.Column(db.String(100), unique=True)
     creation_date = db.Column(db.DateTime)
     last_login = db.Column(db.DateTime)
+    email_verified = db.Column(db.Boolean, nullable=False, default=False)
 
-    def __init__(self,first_name, surname, login, password, birthdate, email_address):
+    def __init__(self,first_name, surname, login, password, birthdate, email_address, email_verified=False):
         self.first_name = first_name
         self.surname = surname
         self.login = login
@@ -187,6 +209,7 @@ class User(UserMixin, db.Model):
         self.email_address = email_address
         self.creation_date = datetime.now()
         self.last_login = datetime.now()
+        self.email_verified = email_verified
 
     def update(self,first_name, surname, login, birthdate, email_address):
         self.first_name = first_name
@@ -346,6 +369,27 @@ class PasswordResetToken(db.Model):
         return not self.used and datetime.now() < self.expires_at
 
 
+class EmailVerificationToken(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    email = db.Column(db.String(100), nullable=False)
+    token = db.Column(db.String(100), unique=True, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, nullable=False)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used = db.Column(db.Boolean, default=False, nullable=False)
+
+    def __init__(self, user_id, email, token, expiration_hours=EMAIL_VERIFICATION_HOURS):
+        self.user_id = user_id
+        self.email = email
+        self.token = token
+        self.created_at = datetime.now()
+        self.expires_at = self.created_at + timedelta(hours=expiration_hours)
+        self.used = False
+
+    def is_valid(self):
+        return not self.used and datetime.now() < self.expires_at
+
+
 class GroupInvitation(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     groupID = db.Column(db.Integer, nullable=False)
@@ -412,6 +456,9 @@ def sanitize_email(email):
         return None  # Return None if the email is invalid
     return email
 
+def hash_token(token):
+    return hashlib.sha256(str(token).encode()).hexdigest()
+
 LOGIN_MAX_LENGTH = 100
 
 def is_valid_login(login):
@@ -422,6 +469,18 @@ PASSWORD_MAX_LENGTH = 128
 
 def is_valid_password(password):
     return isinstance(password, str) and PASSWORD_MIN_LENGTH <= len(password) <= PASSWORD_MAX_LENGTH
+
+def duplicate_user_message(login, user_id=None):
+    query = db.session.query(User).filter(User.login == login)
+    if user_id is not None:
+        query = query.filter(User.id != user_id)
+    if query.first() is not None:
+        return "Login already used"
+    return "Email already used"
+
+GIFT_NAME_MAX_LENGTH = 100
+GIFT_DESCRIPTION_MAX_LENGTH = 200
+GIFT_PRICE_MAX = 1000000
 
 def send_group_invitation_email(recipient, group_name, inviter_login, invite_link):
     group_name_html = escape(group_name)
@@ -468,6 +527,131 @@ def send_group_invitation_email(recipient, group_name, inviter_login, invite_lin
     </html>
     """
     mail.send(Message(subject, recipients=[recipient], html=body))
+
+def send_verification_email(recipient, first_name, verify_link):
+    first_name_html = escape(first_name)
+    verify_link_html = escape(verify_link)
+    subject = "Confirm your email address on Santa Zapy"
+    body = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <table style="width: 100%; max-width: 600px; margin: 0 auto; border-collapse: collapse; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+            <thead>
+                <tr style="background-color: #f4f4f4; border-bottom: 1px solid #ddd;">
+                    <th style="padding: 15px; text-align: left;">
+                        <h2 style="margin: 0; color: #333;">Confirm your email address</h2>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td style="padding: 20px;">
+                        <p>Hello {first_name_html},</p>
+                        <p>Please confirm your email address by clicking the button below.</p>
+
+                        <div style="text-align: center; margin: 20px 0;">
+                            <a href="{verify_link_html}" style="display: inline-block; padding: 15px 30px; background-color: #dc3545; color: #ffffff; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px;">Confirm my email</a>
+                        </div>
+                        <p style="font-size: 14px; color: #666;">If the button doesn't work, use this link instead:</p>
+                        <p style="word-break: break-all;"><a href="{verify_link_html}" style="color: #007BFF;">{verify_link_html}</a></p>
+                        <p style="font-size: 12px; color: #888; margin-top: 20px;">This link will expire in 24 hours.</p>
+
+                        <p>Best regards,</p>
+                        <p style="font-weight: bold;">Santa Zapy<br></p>
+                    </td>
+                </tr>
+                <tr style="background-color: #f4f4f4;">
+                    <td style="text-align: center; padding: 10px;">
+                        <p style="margin: 0; font-size: 12px; color: #888;">© 2025 Santa Zapy. All rights reserved.</p>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </body>
+    </html>
+    """
+    mail.send(Message(subject, recipients=[recipient], html=body))
+
+def create_email_verification(user, email):
+    raw_token = secrets.token_urlsafe(32)
+    db.session.query(EmailVerificationToken).filter(
+        EmailVerificationToken.user_id == user.id, EmailVerificationToken.used == False
+    ).update({EmailVerificationToken.used: True})
+    db.session.add(EmailVerificationToken(user.id, email, hash_token(raw_token)))
+    return f"{cors_protocol}://{cors_host}/verify-email/{raw_token}"
+
+def delete_stale_unverified_users(login, email):
+    threshold = datetime.now() - timedelta(hours=EMAIL_VERIFICATION_HOURS)
+    conditions = [User.login == login]
+    if email:
+        conditions.append(User.email_address == email)
+    stale_users = db.session.query(User).filter(
+        User.email_verified == False, User.creation_date <= threshold,
+        db.or_(*conditions),
+    ).all()
+    for stale_user in stale_users:
+        delete_user_account(stale_user)
+    db.session.commit()
+
+def delete_user_account(user):
+    # Removes the user and everything that references it. The caller commits.
+    admin_groups = db.session.query(GiftGroup).filter(GiftGroup.creatorID == str(user.id)).all()
+
+    for group in admin_groups:
+        members = db.session.query(GiftGroupMember).filter(GiftGroupMember.groupID == group.id).all()
+        pairs = db.session.query(SecretSantaPair).filter(SecretSantaPair.groupID == group.id).all()
+        invitations = db.session.query(GroupInvitation).filter(GroupInvitation.groupID == group.id).all()
+        exclusions = db.session.query(SecretSantaExclusion).filter(SecretSantaExclusion.groupID == group.id).all()
+        db.session.delete(group)
+
+        for member in members:
+            db.session.delete(member)
+        for pair in pairs:
+            db.session.delete(pair)
+        for invitation in invitations:
+            db.session.delete(invitation)
+        for exclusion in exclusions:
+            db.session.delete(exclusion)
+
+    memberships = db.session.query(GiftGroupMember).filter(GiftGroupMember.memberID == user.id).all()
+    for membership in memberships:
+        db.session.delete(membership)
+
+    gifter_pairs = db.session.query(SecretSantaPair).filter(SecretSantaPair.gifterID == user.id).all()
+    for pair in gifter_pairs:
+        pair.gifterID = -1
+    receiver_pairs = db.session.query(SecretSantaPair).filter(SecretSantaPair.receiverID == user.id).all()
+    for pair in receiver_pairs:
+        pair.receiverID = -1
+
+    db.session.query(Gift).filter(Gift.receiverID == user.id).delete(synchronize_session=False)
+    db.session.query(Gift).filter(Gift.gifterID == user.id).update({Gift.gifterID: 0}, synchronize_session=False)
+
+    db.session.query(SecretSantaExclusion).filter(
+        db.or_(SecretSantaExclusion.userID == user.id, SecretSantaExclusion.excludedUserID == user.id)
+    ).delete(synchronize_session=False)
+    db.session.query(GroupInvitation).filter(GroupInvitation.email == user.email_address).delete(synchronize_session=False)
+    db.session.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.id).delete(synchronize_session=False)
+    db.session.query(EmailVerificationToken).filter(EmailVerificationToken.user_id == user.id).delete(synchronize_session=False)
+
+    db.session.delete(user)
+
+def apply_schema_migrations():
+    inspector = sa_inspect(db.engine)
+    user_columns = {column['name'] for column in inspector.get_columns('user')}
+    if 'email_verified' not in user_columns:
+        with db.engine.begin() as connection:
+            connection.execute(text("ALTER TABLE `user` ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT 1"))
+    unique_columns = {tuple(index['column_names']) for index in inspector.get_indexes('user') if index.get('unique')}
+    unique_columns |= {tuple(constraint['column_names']) for constraint in inspector.get_unique_constraints('user')}
+    for column in ('login', 'email_address'):
+        if (column,) in unique_columns:
+            continue
+        try:
+            with db.engine.begin() as connection:
+                connection.execute(text(f"ALTER TABLE `user` ADD CONSTRAINT uq_user_{column} UNIQUE ({column})"))
+        except SQLAlchemyError:
+            app.logger.exception(f"Could not add a unique constraint on user.{column}: remove the duplicate values, then restart")
 
 def generate_secret_pairs(users, group):
     
@@ -537,23 +721,32 @@ def find_valid_assignment(gifters, available_receivers, excluded_receivers, pair
 ####################################################################################################
 
 def delete_inactive_users():
-    threshold = datetime.now() - timedelta(days = max_inactivity_allowed)
-    inactive_users = db.session.query(User).filter(User.last_login <= threshold).all()
+    now = datetime.now()
+    inactive_users = db.session.query(User).filter(db.or_(
+        User.last_login <= now - timedelta(days=max_inactivity_allowed),
+        db.and_(User.email_verified == False, User.creation_date <= now - timedelta(hours=EMAIL_VERIFICATION_HOURS)),
+    )).all()
     for user in inactive_users:
-        db.session.delete(user)
+        delete_user_account(user)
     db.session.commit()
 
-def check_inactive_users_periodically():    
-    delete_inactive_users()
+def check_inactive_users_periodically():
+    try:
+        with app.app_context():
+            delete_inactive_users()
+    except Exception:
+        app.logger.exception("Inactive users purge failed")
     # Schedule the next execution of this function
-    Timer(check_interval, check_inactive_users_periodically).start()
+    timer = Timer(check_interval, check_inactive_users_periodically)
+    timer.daemon = True
+    timer.start()
 
 
 ####################################################################################################
 #############################################   ROUTE   ############################################
 ####################################################################################################
 
-@app.route('/api/logout')
+@app.route('/api/logout', methods=['POST'])
 @login_required
 def logout():
     logout_user()
@@ -583,6 +776,8 @@ def login():
     if not user or not user.check_password(password):
         return "Login ou mot de passe incorrect"
     else:
+        if not user.email_verified:
+            return "Email not verified"
         user.update_last_login()
         db.session.commit()
         login_user(user, remember=remember_me)
@@ -597,76 +792,91 @@ def signup():
         return "Invalid login"
     if not is_valid_password(signup_request['password']):
         return "Invalid password"
-    dbentry_user = db.session.query(User).filter(User.login == signup_request['login']).first()
-    
+
     clean_email = sanitize_email(signup_request['email_address'])
 
     invite_token = signup_request.get('invite_token')
     invitation = None
     if invite_token:
-        invitation = db.session.query(GroupInvitation).filter(GroupInvitation.token == invite_token).first()
+        invitation = db.session.query(GroupInvitation).filter(GroupInvitation.token == hash_token(invite_token)).first()
         if invitation is None or not invitation.is_valid():
             return "Invalid or expired invitation"
         if clean_email != invitation.email:
             return "Email does not match the invitation"
+
+    delete_stale_unverified_users(signup_request['login'], clean_email)
+
+    dbentry_user = db.session.query(User).filter(User.login == signup_request['login']).first()
     dbentry_email = db.session.query(User).filter(User.email_address == clean_email).first()
-    
 
     remember_me_string = request.get_json()['remember_me']
-    
+
     if remember_me_string == "true":
         remember_me = True
     else:
         remember_me = False
 
-    if dbentry_user == None:
-        if dbentry_email == None:
-            birthdate = string_to_date(signup_request['birthdate'])
-            if birthdate != "Incorrect date format" and clean_email:
-                user = User(signup_request['first_name'], signup_request['surname'], signup_request['login'], signup_request['password'], birthdate, clean_email)
-                db.session.add(user)
-                db.session.commit()
-                if invitation is not None:
-                    pending_invitations = db.session.query(GroupInvitation).filter(
-                        GroupInvitation.email == clean_email
-                    ).all()
-                    for pending in pending_invitations:
-                        if not pending.is_valid():
-                            continue
-                        pending.used = True
-                        invited_group = db.session.query(GiftGroup).filter(GiftGroup.id == pending.groupID).first()
-                        if invited_group is not None and not invited_group.secret_santa_active and not user_in_group(user.id, pending.groupID):
-                            db.session.add(GiftGroupMember(pending.groupID, user.id))
-                    db.session.commit()
-                login_user(user, remember=remember_me)
-                return "Inscription réussie"
-            else:
-                if birthdate == "Incorrect date format":
-                    return "Incorrect date format"
-                else:
-                    return 'Incorrect email format'
-        else:
-            return "Email already used"
-    else:
+    if dbentry_user != None:
         return "Login already used"
+    if dbentry_email != None:
+        return "Email already used"
+
+    birthdate = string_to_date(signup_request['birthdate'])
+    if birthdate == "Incorrect date format":
+        return "Incorrect date format"
+    if not clean_email:
+        return 'Incorrect email format'
+
+    user = User(signup_request['first_name'], signup_request['surname'], signup_request['login'], signup_request['password'], birthdate, clean_email, email_verified=invitation is not None)
+    db.session.add(user)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return duplicate_user_message(signup_request['login'])
+
+    if invitation is not None:
+        pending_invitations = db.session.query(GroupInvitation).filter(
+            GroupInvitation.email == clean_email
+        ).all()
+        for pending in pending_invitations:
+            if not pending.is_valid():
+                continue
+            pending.used = True
+            invited_group = db.session.query(GiftGroup).filter(GiftGroup.id == pending.groupID).first()
+            if invited_group is not None and not invited_group.secret_santa_active and not user_in_group(user.id, pending.groupID):
+                db.session.add(GiftGroupMember(pending.groupID, user.id))
+        db.session.commit()
+        login_user(user, remember=remember_me)
+        return "Inscription réussie"
+
+    verify_link = create_email_verification(user, clean_email)
+    db.session.commit()
+    try:
+        send_verification_email(clean_email, user.first_name, verify_link)
+    except Exception:
+        app.logger.exception("Failed to send verification email")
+        delete_user_account(user)
+        db.session.commit()
+        return "Failed to send the verification email"
+    return "Verification email sent"
 
 @app.route('/api/forgotpassword', methods=['POST'])
 @limiter.limit("5 per hour")
 @limiter.limit("3 per hour", key_func=forgot_email_key)
 def forgotpassword():
-    forgot_request = request.get_json()
+    email = str((request.get_json(silent=True) or {}).get('email_address') or '').strip().lower()
+    generic = jsonify({"message": "If an account exists with this email, a password reset link has been sent"}), 200
 
-    user = db.session.query(User).filter(User.email_address==forgot_request['email_address']).first()
-    
+    user = db.session.query(User).filter(User.email_address == email).first()
+
     if not user:
-        # Return success message even if user not found (security best practice)
-        return jsonify({"message": "If an account exists with this email, a password reset link has been sent"}), 200
-    
-    # Generate secure reset token
+        return generic
+
+    # Generate secure reset token (only its hash is stored)
     reset_token = secrets.token_urlsafe(64)
-    
-    # Create password reset token entry
-    password_reset = PasswordResetToken(user_id=user.id, token=reset_token, expiration_hours=1)
+
+    password_reset = PasswordResetToken(user_id=user.id, token=hash_token(reset_token), expiration_hours=1)
     db.session.add(password_reset)
     db.session.commit()
 
@@ -674,7 +884,7 @@ def forgotpassword():
     reset_link = f"{cors_protocol}://{cors_host}/reset-password/{reset_token}"
 
     try:
-        recipient = forgot_request['email_address']
+        recipient = user.email_address
         subject = 'Reset Password Santa'
         body = f"""
         <html>
@@ -717,17 +927,13 @@ def forgotpassword():
         </html>
         """
 
-        # Validate required fields
-        if not recipient or not subject or not body:
-            return jsonify({"error": "'recipient', 'subject', and 'body' are required fields"}), 400
-
         # Create and send the email
         msg = Message(subject, recipients=[recipient], html=body)
         mail.send(msg)
+    except Exception:
+        app.logger.exception("Failed to send password reset email")
 
-        return jsonify({"message": "If an account exists with this email, a password reset link has been sent"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return generic
 
 @app.route('/api/validate-reset-token', methods=['GET'])
 def validate_reset_token():
@@ -736,7 +942,7 @@ def validate_reset_token():
     if not token:
         return jsonify({"valid": False, "error": "Token is required"}), 400
     
-    reset_token = db.session.query(PasswordResetToken).filter(PasswordResetToken.token == token).first()
+    reset_token = db.session.query(PasswordResetToken).filter(PasswordResetToken.token == hash_token(token)).first()
     
     if not reset_token:
         return jsonify({"valid": False, "error": "Invalid token"}), 404
@@ -760,7 +966,7 @@ def validate_invitation():
     if not token:
         return invalid
 
-    invitation = db.session.query(GroupInvitation).filter(GroupInvitation.token == token).first()
+    invitation = db.session.query(GroupInvitation).filter(GroupInvitation.token == hash_token(token)).first()
     if invitation is None or not invitation.is_valid():
         return invalid
 
@@ -769,6 +975,35 @@ def validate_invitation():
         return invalid
 
     return jsonify({"valid": True, "email": invitation.email, "group_name": group.name})
+
+@app.route('/api/verify-email', methods=['POST'])
+@limiter.limit("10 per hour")
+def verify_email():
+    token = (request.get_json(silent=True) or {}).get('token')
+    invalid = jsonify({'status': 'Invalid or expired link'}), 400
+    if not isinstance(token, str) or token == '':
+        return invalid
+    entry = db.session.query(EmailVerificationToken).filter(EmailVerificationToken.token == hash_token(token)).first()
+    if entry is None or not entry.is_valid():
+        return invalid
+    user = db.session.get(User, entry.user_id)
+    if user is None:
+        return invalid
+    if db.session.query(User).filter(User.email_address == entry.email, User.id != user.id).first() is not None:
+        entry.used = True
+        db.session.commit()
+        return jsonify({'status': 'Email already used'}), 409
+    user.email_address = entry.email
+    user.email_verified = True
+    db.session.query(EmailVerificationToken).filter(
+        EmailVerificationToken.user_id == user.id, EmailVerificationToken.used == False
+    ).update({EmailVerificationToken.used: True})
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({'status': 'Email already used'}), 409
+    return jsonify({'status': 'Email verified'})
 
 @app.route('/api/reset-password', methods=['POST'])
 @limiter.limit("10 per hour")
@@ -783,7 +1018,7 @@ def reset_password():
     if not is_valid_password(new_password):
         return jsonify({"error": f"Password must be between {PASSWORD_MIN_LENGTH} and {PASSWORD_MAX_LENGTH} characters"}), 400
     
-    reset_token = db.session.query(PasswordResetToken).filter(PasswordResetToken.token == token).first()
+    reset_token = db.session.query(PasswordResetToken).filter(PasswordResetToken.token == hash_token(token)).first()
     
     if not reset_token:
         return jsonify({"error": "Invalid token"}), 404
@@ -798,6 +1033,7 @@ def reset_password():
     
     # Update user password
     user.update_password(new_password)
+    user.email_verified = True
     
     # Revoke every outstanding reset token (including the current one)
     invalidate_reset_tokens(user.id)
@@ -836,93 +1072,81 @@ def delete_user():
     delete_request = request.get_json()
     if not(user.check_password(delete_request['password'])):
         return "Wrong password"
-    
-    admin_groups = db.session.query(GiftGroup).filter(GiftGroup.creatorID == user_id).all()
 
-    for group in admin_groups:
-        members = db.session.query(GiftGroupMember).filter(GiftGroupMember.groupID == group.id).all()
-        pairs = db.session.query(SecretSantaPair).filter(SecretSantaPair.groupID == group.id).all()
-        invitations = db.session.query(GroupInvitation).filter(GroupInvitation.groupID == group.id).all()
-        db.session.delete(group)
-        
-        for member in members:
-            db.session.delete(member)
-        for pair in pairs:
-            db.session.delete(pair)
-        for invitation in invitations:
-            db.session.delete(invitation)
-
-    memberships = db.session.query(GiftGroupMember).filter(GiftGroupMember.memberID == user_id).all()
-
-    for membership in memberships:
-        db.session.delete(membership)
-
-    gifter_pairs = db.session.query(SecretSantaPair).filter(SecretSantaPair.gifterID == user.id).all()
-    for pair in gifter_pairs:
-        pair.gifterID = -1
-    receiver_pairs = db.session.query(SecretSantaPair).filter(SecretSantaPair.receiverID == user.id).all()
-    for pair in receiver_pairs:
-        pair.receiverID = -1
-    
-
-    db.session.delete(user)
-
+    delete_user_account(user)
     db.session.commit()
-    
+
     logout_user()
-    
+
     return "User deleted"
 
 @app.route('/api/changeprofile', methods = ['PUT'])
+@limiter.limit("10 per hour", key_func=user_or_ip_key)
 @login_required
 def changeprofile():
-    change_profile_request = request.get_json()
-    if not is_valid_login(change_profile_request['login']):
-        return "Invalid login"
+    req = request.get_json()
     user = current_user
-    dbentry_user = User.query.filter_by(login=change_profile_request['login']).all()
-
-    clean_email = sanitize_email(change_profile_request['email_address'])
-    dbentry_email = db.session.query(User).filter(User.email_address == clean_email).all()
-    
-
-    if dbentry_user == [] or user.login == change_profile_request['login']:
-        if dbentry_email == [] or user.email_address == change_profile_request['email_address']:
-            if change_profile_request['birthdate'] == "":
-                birthdate = user.birthdate
-            else:
-                birthdate = string_to_date(change_profile_request['birthdate'])
-            if change_profile_request['email_address'] == "":
-                email = user.email_address
-            else:
-                email = change_profile_request['email_address']
-            email = sanitize_email(email)
-            if birthdate != "Incorrect date format" and email:
-                current_user.update(change_profile_request['first_name'], change_profile_request['surname'], change_profile_request['login'], birthdate, email)
-                db.session.commit()
-                return "Updated Profile"
-            else:
-                return "Incorrect format"
-        else:
-            return "Email already used"
-    else:
+    if not is_valid_login(req['login']):
+        return "Invalid login"
+    if db.session.query(User).filter(User.login == req['login'], User.id != user.id).first() is not None:
         return "Login already used"
+
+    if req['birthdate'] == "":
+        birthdate = user.birthdate
+    else:
+        birthdate = string_to_date(req['birthdate'])
+    if req['email_address'] == "":
+        new_email = user.email_address
+    else:
+        new_email = sanitize_email(req['email_address'])
+    if birthdate == "Incorrect date format" or not new_email:
+        return "Incorrect format"
+
+    email_changed = new_email != user.email_address
+    if email_changed and db.session.query(User).filter(User.email_address == new_email, User.id != user.id).first() is not None:
+        return "Email already used"
+
+    # The current email is kept until the new one is confirmed
+    user.update(req['first_name'], req['surname'], req['login'], birthdate, user.email_address)
+
+    if not email_changed:
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            return duplicate_user_message(req['login'], user.id)
+        return "Updated Profile"
+
+    verify_link = create_email_verification(user, new_email)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return duplicate_user_message(req['login'], user.id)
+    try:
+        send_verification_email(new_email, user.first_name, verify_link)
+    except Exception:
+        app.logger.exception("Failed to send verification email")
+        return "Failed to send the verification email"
+    return "Verification email sent"
 
 @app.route('/api/profile/<int:userid>', methods = ['GET'])
 @login_required
 def profile(userid):
     dbentry = db.session.query(User).filter(User.id == userid).first()
-    if dbentry != None:
-        record = {"first_name":dbentry.first_name,"surname":dbentry.surname,"login":dbentry.login,"email_address":""}
-        if in_same_group(userid,current_user.id):
-            record["birthdate"] = date_to_string(dbentry.birthdate)
-        if str(userid) == str(current_user.id):
-            record["birthdate"] = date_to_string(dbentry.birthdate)
-            record["email_address"] = dbentry.email_address
-        record_json = jsonify(record)
-        return record_json
-    else:
+    if dbentry is None:
         abort(404)
+    is_self = dbentry.id == current_user.id
+    if not is_self and not in_same_group(userid, current_user.id):
+        abort(404)
+    record = {
+        "first_name": dbentry.first_name,
+        "surname": dbentry.surname,
+        "login": dbentry.login,
+        "birthdate": date_to_string(dbentry.birthdate),
+        "email_address": dbentry.email_address if is_self else "",
+    }
+    return jsonify(record)
 
 @app.route('/api/myprofile', methods = ['GET'])
 @login_required
@@ -986,11 +1210,19 @@ def group_gifts(group_id):
 def add_gift():
     userid = current_user.id
     add_request = request.get_json()
+    name = add_request.get('name')
+    description = add_request.get('description', '')
+    if not isinstance(name, str) or name.strip() == '' or len(name) > GIFT_NAME_MAX_LENGTH:
+        return 'Invalid name'
+    if not isinstance(description, str) or len(description) > GIFT_DESCRIPTION_MAX_LENGTH:
+        return 'Invalid description'
     try:
-        price = float(add_request['price'])
-    except:
+        price = float(add_request.get('price'))
+    except (TypeError, ValueError):
         return 'Incorrect Price'
-    gift = Gift(add_request['name'], add_request['description'], price,userid,'')
+    if not math.isfinite(price) or price < 0 or price > GIFT_PRICE_MAX:
+        return 'Incorrect Price'
+    gift = Gift(name, description, price, userid, '')
     db.session.add(gift)
     db.session.commit()
     return "Gift Added"
@@ -1386,11 +1618,12 @@ def invite_group_member():
     if any(invitation.is_valid() for invitation in pending):
         return jsonify({'status': 'Invitation already pending'})
 
-    invitation = GroupInvitation(group_id, clean_email, secrets.token_urlsafe(32))
+    raw_token = secrets.token_urlsafe(32)
+    invitation = GroupInvitation(group_id, clean_email, hash_token(raw_token))
     db.session.add(invitation)
     db.session.commit()
 
-    invite_link = f"{cors_protocol}://{cors_host}/invite/{invitation.token}"
+    invite_link = f"{cors_protocol}://{cors_host}/invite/{raw_token}"
 
     try:
         send_group_invitation_email(clean_email, group.name, current_user.login, invite_link)
@@ -1583,12 +1816,16 @@ def my_secret(group_id):
     group = db.session.query(GiftGroup).filter(GiftGroup.id == group_id).first()
     if group == None:
         return jsonify({'status': 'no group'})
+    if not user_in_group(user_id, group_id):
+        return jsonify({'status': 'no group'})
         
     if not(group.secret_santa_active == True):
         return jsonify({'status': 'No Secret Santa active'})
    
 
     pair = db.session.query(SecretSantaPair).filter(SecretSantaPair.groupID == group_id, SecretSantaPair.gifterID == user_id).first()
+    if pair is None:
+        return jsonify({'status': 'No Secret Santa pair'})
 
     receiver = db.session.query(User).filter(User.id == pair.receiverID).first()
     
@@ -1629,6 +1866,8 @@ def is_active(group_id):
     info_json = {}
 
     if group == None:
+        return jsonify({'status': 'Invalid group'})
+    if not user_in_group(user_id, group_id) and str(group.creatorID) != str(user_id):
         return jsonify({'status': 'Invalid group'})
     if group.secret_santa_active == True:
         info_json['secret_santa'] = 'true'
@@ -1756,6 +1995,7 @@ if __name__ == '__main__':
 
         # Create all tables defined in the models
         db.create_all()
+        apply_schema_migrations()
 
         if not(server_debug):
             check_inactive_users_periodically()
@@ -1776,4 +2016,4 @@ if __name__ == '__main__':
     if server_debug:
         app.run(host = server_host, port = server_port, debug = server_debug)
     else:
-        serve(app, host=server_host, port=server_port)
+        serve(app, host=server_host, port=server_port, max_request_body_size=1024 * 1024)
