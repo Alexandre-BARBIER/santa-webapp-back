@@ -34,6 +34,8 @@ from datetime import datetime, timedelta
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 ####################################################################################################
 #############################################   INIT   #############################################
@@ -162,23 +164,33 @@ def add_security_headers(response):
 ##########################################   PEPPERING   ###########################################
 ####################################################################################################
 
-def encrypt_data(data, key):
-    iv = secrets.token_bytes(16)  # Initialization vector
-    key = key.encode()
-    data = data.encode()
-    cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=default_backend())
-    encryptor = cipher.encryptor()
-    ciphertext = encryptor.update(data) + encryptor.finalize()
-    return iv + ciphertext
+def derive_hmac_key(pepper, purpose):
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=purpose).derive(pepper.encode())
 
-def decrypt_data(ciphertext, key):
-    iv = ciphertext[:16]
-    key = key.encode('utf-8')
-    ciphertext = ciphertext[16:]
-    cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=default_backend())
-    decryptor = cipher.decryptor()
-    plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-    return plaintext
+USER_HMAC_KEY = derive_hmac_key(PEPPER, b"santa-zapy/user-password/hmac-sha256")
+GROUP_HMAC_KEY = derive_hmac_key(GROUP_PEPPER, b"santa-zapy/group-join-code/hmac-sha256")
+
+CURRENT_HASH_PREFIX = b"$argon2"
+
+def hash_secret(secret, hmac_key):
+    peppered = hmac.new(hmac_key, secret.encode('utf-8'), hashlib.sha256).hexdigest()
+    return PasswordHasher().hash(peppered).encode('ascii')
+
+def is_current_hash(blob):
+    return isinstance(blob, bytes) and blob.startswith(CURRENT_HASH_PREFIX)
+
+def verify_secret(blob, secret, hmac_key, legacy_pepper):
+    # Returns (matches, needs_rehash). Raises on unreadable hashes; callers handle it (SEC-12).
+    if is_current_hash(blob):
+        peppered = hmac.new(hmac_key, secret.encode('utf-8'), hashlib.sha256).hexdigest()
+        PasswordHasher().verify(blob.decode('ascii'), peppered)
+        return True, False
+    # Legacy format: AES-CFB(Argon2(secret + pepper)) keyed with the raw pepper. Read-only.
+    iv, ciphertext = blob[:16], blob[16:]
+    decryptor = Cipher(algorithms.AES(legacy_pepper.encode()), modes.CFB(iv), backend=default_backend()).decryptor()
+    legacy_hash = decryptor.update(ciphertext) + decryptor.finalize()
+    PasswordHasher().verify(legacy_hash, secret + legacy_pepper)
+    return True, True
 
 ####################################################################################################
 ##############################################   DB   ##############################################
@@ -202,9 +214,7 @@ class User(UserMixin, db.Model):
         self.first_name = first_name
         self.surname = surname
         self.login = login
-        argon_init = PasswordHasher()
-        hashed_password = argon_init.hash(password + PEPPER)
-        self.hashed_and_peppered_password = encrypt_data(hashed_password, PEPPER)
+        self.hashed_and_peppered_password = hash_secret(password, USER_HMAC_KEY)
         self.birthdate = birthdate
         self.email_address = email_address
         self.creation_date = datetime.now()
@@ -220,18 +230,21 @@ class User(UserMixin, db.Model):
 
 
     def check_password(self,password_to_check):
-        argon_init = PasswordHasher()
+        if not isinstance(password_to_check, str):
+            return False
         try:
-            hashed_password = decrypt_data(self.hashed_and_peppered_password, PEPPER)
-            argon_init.verify(hashed_password, password_to_check + PEPPER)
-            return True
+            matches, needs_rehash = verify_secret(self.hashed_and_peppered_password, password_to_check, USER_HMAC_KEY, PEPPER)
         except exceptions.VerifyMismatchError:
             return False
+        except (exceptions.VerificationError, exceptions.InvalidHashError, ValueError, TypeError):
+            app.logger.exception(f"Unreadable password hash for user {self.id}")
+            return False
+        if needs_rehash:
+            self.update_password(password_to_check)
+        return matches
 
     def update_password(self, new_password):
-        argon_init = PasswordHasher()
-        hashed_password = argon_init.hash(new_password + PEPPER)
-        self.hashed_and_peppered_password = encrypt_data(hashed_password, PEPPER)
+        self.hashed_and_peppered_password = hash_secret(new_password, USER_HMAC_KEY)
     
     def get_session_token(self):
         return hashlib.sha256(self.hashed_and_peppered_password).hexdigest()[:32]
@@ -289,9 +302,7 @@ class GiftGroup(db.Model):
     def __init__(self, name, visibility, join_code, creatorID):
         self.name = name
         self.visibility = visibility
-        argon_init = PasswordHasher()
-        hashed_code = argon_init.hash(join_code + GROUP_PEPPER)
-        self.join_code = encrypt_data(hashed_code, GROUP_PEPPER)
+        self.join_code = hash_secret(join_code, GROUP_HMAC_KEY)
         if len(join_code) == 1:
             self.hint = join_code
         else:
@@ -301,18 +312,21 @@ class GiftGroup(db.Model):
         self.secret_santa_date = datetime.now()
 
     def check_join_code(self,code_to_check):
-        argon_init = PasswordHasher()
+        if not isinstance(code_to_check, str):
+            return False
         try:
-            hashed_code = decrypt_data(self.join_code, GROUP_PEPPER)
-            argon_init.verify(hashed_code, code_to_check + GROUP_PEPPER)
-            return True
+            matches, needs_rehash = verify_secret(self.join_code, code_to_check, GROUP_HMAC_KEY, GROUP_PEPPER)
         except exceptions.VerifyMismatchError:
             return False
+        except (exceptions.VerificationError, exceptions.InvalidHashError, ValueError, TypeError):
+            app.logger.exception(f"Unreadable join code hash for group {self.id}")
+            return False
+        if needs_rehash:
+            self.join_code = hash_secret(code_to_check, GROUP_HMAC_KEY)
+        return matches
     
     def change_join_code(self,new_join_code):
-        argon_init = PasswordHasher()
-        hashed_code = argon_init.hash(new_join_code + GROUP_PEPPER)
-        self.join_code = encrypt_data(hashed_code, GROUP_PEPPER)
+        self.join_code = hash_secret(new_join_code, GROUP_HMAC_KEY)
         if len(new_join_code) == 1:
             self.hint = new_join_code
         else:
@@ -652,6 +666,11 @@ def apply_schema_migrations():
                 connection.execute(text(f"ALTER TABLE `user` ADD CONSTRAINT uq_user_{column} UNIQUE ({column})"))
         except SQLAlchemyError:
             app.logger.exception(f"Could not add a unique constraint on user.{column}: remove the duplicate values, then restart")
+
+def log_legacy_hash_count():
+    legacy_users = sum(1 for (blob,) in db.session.query(User.hashed_and_peppered_password) if not is_current_hash(blob))
+    legacy_groups = sum(1 for (blob,) in db.session.query(GiftGroup.join_code) if not is_current_hash(blob))
+    app.logger.warning(f"Legacy AES-CFB hashes remaining: {legacy_users} user password(s), {legacy_groups} group join code(s)")
 
 def generate_secret_pairs(users, group):
     
@@ -1996,6 +2015,7 @@ if __name__ == '__main__':
         # Create all tables defined in the models
         db.create_all()
         apply_schema_migrations()
+        log_legacy_hash_count()
 
         if not(server_debug):
             check_inactive_users_periodically()
