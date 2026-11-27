@@ -1,0 +1,21 @@
+[project]
+name = "santa-webapp-back"
+version = "0.1.0"
+description = "Back Flask de Santa"
+requires-python = ">=3.14"
+dependencies = [
+    "argon2-cffi",
+    "cryptography",
+    "flask",
+    "flask-cors",
+    "flask-limiter",
+    "flask-login",
+    "flask-mail",
+    "flask-sqlalchemy",
+    "mariadb",
+    "sqlalchemy-utils",
+    "waitress",
+]
+
+[tool.uv]
+package = false

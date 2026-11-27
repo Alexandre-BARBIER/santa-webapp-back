@@ -1,2 +1,3 @@
 venv
 secret_config.json
+.venv

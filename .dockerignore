@@ -1,0 +1,11 @@
+**/__pycache__
+.git
+.gitignore
+.venv
+venv
+secret_config.json
+secret_generator.py
+README.md
+Dockerfile
+.dockerignore
+captain-definition

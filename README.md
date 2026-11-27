@@ -98,14 +98,20 @@ Pour avoir l'IP sur laquelle tourne la DB
 
 # Run back hors docker
 
-Installer les requirements :
-(Des problèmes peuvent être rencontrés pour installer `mariadb`)
+Installer les dépendances avec [uv](https://docs.astral.sh/uv/) (versions figées dans `uv.lock`) :
+(Le paquet `mariadb` demande `libmariadb-dev` et un compilateur C)
 
 ```sh
-pip install -r requirements.txt
+uv sync --locked
 ```
 
-Lancer backend.py
+Lancer backend.py :
+
+```sh
+uv run backend.py
+```
+
+Ajouter ou mettre à jour une dépendance : `uv add <paquet>` ou `uv lock --upgrade`, puis commiter `pyproject.toml` et `uv.lock`.
 
 # Run dans docker
 
