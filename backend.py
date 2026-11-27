@@ -1464,17 +1464,16 @@ def join_group():
         if group == None:
             return "Unknown group"
 
-        if group.visibility == 'protected' :
-            if group.check_join_code(input_code):
-                db.session.add(membership)
-                db.session.commit()
-                return "Group joined"
-            else:
-                return "Failed to join group"
-        else:
-            db.session.add(membership)
-            db.session.commit()
-            return "Group joined"
+        if group.visibility == 'protected' and not group.check_join_code(input_code):
+            return "Failed to join group"
+
+        # Checked after the join code so that the state of a protected group is not leaked to non-members
+        if group.secret_santa_active:
+            return "Secret Santa started"
+
+        db.session.add(membership)
+        db.session.commit()
+        return "Group joined"
 
 @app.route('/api/group/leave', methods=['POST'])
 @login_required
