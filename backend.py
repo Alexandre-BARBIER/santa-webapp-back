@@ -8,7 +8,6 @@ import hmac
 import re
 import json
 import secrets
-import string
 from waitress import serve
 import random
 
@@ -59,6 +58,11 @@ if server_debug and server_host not in ('127.0.0.1', 'localhost', '::1'):
 PEPPER = os.environ['USER_PEPPER']
 GROUP_PEPPER = os.environ['GROUP_PEPPER']
 
+# Flask session signing key: must be stable across restarts and shared by every worker/replica
+SECRET_KEY = os.environ['SECRET_KEY']
+if len(SECRET_KEY) < 32:
+    raise SystemExit("SECRET_KEY must be at least 32 characters long (see secret_generator.py)")
+
 # Extract CORS configuration
 cors_host = os.environ['CORS_HOST']
 
@@ -91,10 +95,6 @@ if trusted_proxy_count > 0:
 cors_origin = cors_protocol + "://" + cors_host
 CORS(app, resources={r"/api/*": {"origins": [cors_origin]}}, supports_credentials=True)
 
-def generate_secret_key(length=24):
-    alphabet = string.ascii_letters + string.digits + string.punctuation
-    return ''.join(secrets.choice(alphabet) for _ in range(length))
-
 db_url = URL.create(
     "mariadb+mariadbconnector",
     username=username, password=password,
@@ -102,7 +102,7 @@ db_url = URL.create(
 )
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url.render_as_string(hide_password=False)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = generate_secret_key()
+app.config['SECRET_KEY'] = SECRET_KEY
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024
 
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'

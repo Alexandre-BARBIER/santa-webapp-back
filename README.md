@@ -66,7 +66,11 @@ Pour déploiement correctement ce projet sur caprover, il convient de définir l
         
     MAIL_NAME
   </li>
-  <h2>Configuration des poivres :</h2>
+  <h2>Configuration des secrets :</h2>
+  <li> Clé de signature des sessions Flask (32 caractères minimum, stable d'un redéploiement à l'autre, identique sur tous les réplicas : la changer déconnecte tout le monde) :
+
+    SECRET_KEY
+  </li>
   <li> Poivre pour sécuriser les mots de passe des utilisateurs : 
     
     USER_PEPPER
@@ -77,11 +81,11 @@ Pour déploiement correctement ce projet sur caprover, il convient de définir l
   </li>
 </ul>
 
-Pour cela, le script Python ```secret_generator.py``` est disponible à la racine du projet. Pour l'utiliser, il suffit de lancer la commande :
+Pour générer ces trois valeurs, le script Python ```secret_generator.py``` est disponible à la racine du projet. Pour l'utiliser, il suffit de lancer la commande :
 
     python3 secret_generator.py
 
-Il suffit alors d'aller dans le panneau de configuration de l'application sur l'interface web d'administration de Caprover et de créer les nouvelles entrées correspondantes pour les variables d'environnement.
+Il suffit alors d'aller dans le panneau de configuration de l'application sur l'interface web d'administration de Caprover et de créer les nouvelles entrées correspondantes pour les variables d'environnement. Le back refuse de démarrer si `SECRET_KEY` est absente ou fait moins de 32 caractères.
 
 # Run mariadb
 ```sh
